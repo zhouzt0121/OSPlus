@@ -19,7 +19,6 @@ _probe/
 bt37
 bt37/
 *.apk
-!OSPlus-1.0.0.apk
 repo.xml
 sdklist.txt
 
@@ -34,3 +33,4 @@ _p41.py
 
 # ----- 报告与导出 -----
 fps_export.csv
+*.bundle
