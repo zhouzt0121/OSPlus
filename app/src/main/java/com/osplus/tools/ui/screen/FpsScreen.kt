@@ -3,36 +3,32 @@ package com.osplus.tools.ui.screen
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
-import androidx.compose.foundation.Image
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.osplus.tools.core.FpsOverlayState
 import com.osplus.tools.core.FpsRecorder
 import com.osplus.tools.core.Preferences
 import com.osplus.tools.core.Shell
@@ -45,162 +41,14 @@ import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
 import com.osplus.tools.ui.components.SegmentedTabs
 import com.osplus.tools.ui.components.SwitchRow
-import com.osplus.tools.ui.components.UsageBar
 import com.osplus.tools.ui.components.downsample
+import com.osplus.tools.ui.theme.OsText
+import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Button
+import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-
-@Composable
-fun ProcessScreen(vm: DeviceViewModel) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
-    val tabs = remember { listOf("进程管理", "帧率记录") }
-
-    Column(Modifier.fillMaxSize()) {
-        SegmentedTabs(
-            tabs = tabs,
-            selectedIndex = tab,
-            onSelect = { tab = it },
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-        )
-        if (tab == 0) ProcessListTab(vm) else FpsTab(vm)
-    }
-}
-
-@Composable
-private fun ProcessListTab(vm: DeviceViewModel) {
-    val processes by vm.processes.collectAsStateWithLifecycle()
-    val icons by vm.appIcons.collectAsStateWithLifecycle()
-    val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
-    var sortByCpu by rememberSaveable { mutableStateOf(true) }
-    var autoRefresh by rememberSaveable { mutableStateOf(true) }
-
-    // 用户触摸列表期间跳过刷新：自动刷新会重排列表，
-    // 若在长按手势进行中重排，手势会被取消，长按操作就点不出来
-    var lastTouchAtMs by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(autoRefresh) {
-        while (autoRefresh) {
-            val idle = System.currentTimeMillis() - lastTouchAtMs > 1200
-            if (idle) vm.refreshProcesses()
-            delay(2000)
-        }
-    }
-
-    // 进程列表变化后按需补齐缺失的应用图标
-    LaunchedEffect(processes) {
-        vm.loadAppIcons(processes.mapNotNull { it.packageName })
-    }
-
-    val sorted = remember(processes, sortByCpu) {
-        if (sortByCpu) processes.sortedByDescending { it.cpuPercent }
-        else processes.sortedByDescending { it.rssKb }
-    }
-
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.changes.any { it.pressed }) {
-                            lastTouchAtMs = System.currentTimeMillis()
-                        }
-                    }
-                }
-            },
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        item {
-            SectionCard {
-                Column(Modifier.padding(vertical = 3.dp)) {
-                    SwitchRow(
-                        label = "自动刷新",
-                        summary = "每 2 秒重新采样一次进程占用",
-                        checked = autoRefresh,
-                        onCheckedChange = { autoRefresh = it },
-                    )
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = if (sortByCpu) "按 CPU 占用排序" else "按内存占用排序",
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = MiuixTheme.colorScheme.onBackgroundVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Button(onClick = { sortByCpu = !sortByCpu }) {
-                            Text(if (sortByCpu) "内存" else "CPU")
-                        }
-                    }
-                    if (!rootAvailable) {
-                        Spacer(Modifier.height(6.dp))
-                        NoticeBanner("结束进程需要 Root 权限")
-                    }
-                }
-            }
-        }
-
-        items(sorted.take(120), key = { it.pid }) { p ->
-            SectionCard {
-                Column(Modifier.padding(vertical = 3.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        val icon = p.packageName?.let { icons[it] }
-                        if (icon != null) {
-                            Image(
-                                bitmap = icon,
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .size(30.dp)
-                                    .clip(RoundedCornerShape(9.dp)),
-                            )
-                            Spacer(Modifier.width(10.dp))
-                        }
-                        Text(
-                            text = p.name,
-                            style = MiuixTheme.textStyles.body2,
-                            color = MiuixTheme.colorScheme.onBackground,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                        )
-                        Text(
-                            text = "%.1f%%".format(p.cpuPercent),
-                            style = MiuixTheme.textStyles.title4,
-                            color = if (p.cpuPercent > 50f) ChartColors.power else ChartColors.cpu,
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    UsageBar(
-                        fraction = (p.cpuPercent / 100f).coerceIn(0f, 1f),
-                        color = ChartColors.cpu,
-                        barHeight = 5.dp,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = "PID ${p.pid} · ${p.user} · 内存 ${p.rssKb / 1024} MB · 状态 ${p.state}",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onBackgroundVariant,
-                        maxLines = 1,
-                    )
-                    p.packageName?.let { pkg ->
-                        Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { vm.forceStop(pkg) }, enabled = rootAvailable) {
-                                Text("强制停止")
-                            }
-                            Button(onClick = { vm.killProcess(p.pid) }, enabled = rootAvailable) {
-                                Text("结束进程")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 /** 帧率记录的分析窗口 */
 private enum class FpsWindow(val label: String, val seconds: Int) {
@@ -211,9 +59,27 @@ private enum class FpsWindow(val label: String, val seconds: Int) {
     All("全部", 0),
 }
 
+/**
+ * 把毫秒时长格式化为时钟样式：
+ * 不足 1 小时用 `mm:ss`，超过则用 `h:mm:ss`。
+ */
+private fun fmtElapsed(ms: Long): String {
+    val total = (ms / 1000L).coerceAtLeast(0L)
+    val h = total / 3600L
+    val m = (total % 3600L) / 60L
+    val s = total % 60L
+    return if (h > 0L) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+}
+
+/**
+ * 帧率（一级页）：记录开关、悬浮窗、多档分析窗口与逐项趋势。
+ *
+ * 录制期间刻意不绘制图表，避免绘图开销污染正在测量的帧率数据。
+ */
 @Composable
-private fun FpsTab(vm: DeviceViewModel) {
+fun FpsScreen(vm: DeviceViewModel) {
     val context = LocalContext.current
+    val c = osColors()
     val liveSample by FpsRecorder.sample.collectAsStateWithLifecycle()
     val records by vm.fpsRecords.collectAsStateWithLifecycle()
     val recording by vm.fpsRecording.collectAsStateWithLifecycle()
@@ -223,13 +89,14 @@ private fun FpsTab(vm: DeviceViewModel) {
     // 开关状态取服务真实运行状态，而不是偏好值——否则应用被强停后
     // 开关会显示「开启」但服务已死，用户一点反而把它关掉
     val overlayRunning by vm.overlayRunning.collectAsStateWithLifecycle()
+    val overlayAlpha by vm.overlayAlpha.collectAsStateWithLifecycle()
     val overlayGranted = remember { Settings.canDrawOverlays(context) }
     var window by rememberSaveable { mutableIntStateOf(1) }
     // 记录分析默认用折线，观察波动更直观；可切回柱状对比单点高低
     var lineMode by rememberSaveable { mutableStateOf(true) }
 
     // 注意：这里**不能**在 onDispose 里停止录制。
-    // 切到其他标签页 / 其他应用都会让本 Composable 离开组合，
+    // 切到其他页面 / 其他应用都会让本 Composable 离开组合，
     // 那样会导致「一离开本页记录就断」——录制状态由 ViewModel 持有，
     // 只应在用户显式关闭开关时停止。
 
@@ -243,6 +110,24 @@ private fun FpsTab(vm: DeviceViewModel) {
         }
     }
     val latest = records.lastOrNull()
+
+    // 记录时长 = 最新一条与首条的时间差。
+    // 录制中必须用「当前时刻」而不是「最后一条的时间戳」来算，
+    // 否则每秒才前进一格、且中间停顿无法体现；配合下面的一秒心跳，
+    // 时长会在开始记录后立刻开始连续增长。
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(recording) {
+        while (recording) {
+            nowMs = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    val elapsedMs = records.firstOrNull()?.let { first ->
+        val end = if (recording) nowMs else records.last().timeMs
+        (end - first.timeMs).coerceAtLeast(0L)
+    } ?: 0L
+    val elapsedText = fmtElapsed(elapsedMs)
+
     // 折线可容纳更多采样点，柱状图过多会挤在一起
     val bars = if (lineMode) 60 else 30
     // 时间轴左端文案随窗口变化
@@ -253,14 +138,12 @@ private fun FpsTab(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
-        ),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
             SectionCard(title = "记录控制") {
-                Column(Modifier.padding(vertical = 3.dp)) {
+                Column(Modifier.padding(vertical = 2.dp)) {
                     SwitchRow(
                         label = "开始记录",
                         summary = "每秒留档一条：帧率 + 每核占用/频率 + GPU + 内存 + 功耗 + 温度",
@@ -287,7 +170,34 @@ private fun FpsTab(vm: DeviceViewModel) {
                             else FpsOverlayService.stop(context)
                         },
                     )
-                    Spacer(Modifier.height(8.dp))
+                    if (overlayGranted) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "悬浮窗不透明度",
+                                style = OsText.caption,
+                                color = c.textSecondary,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                text = "%.0f%%".format(overlayAlpha * 100f),
+                                style = OsText.value,
+                                color = c.textPrimary,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
+                        Slider(
+                            value = overlayAlpha,
+                            onValueChange = { vm.setOverlayAlpha(it) },
+                            valueRange = FpsOverlayState.MIN_ALPHA..1f,
+                        )
+                        Text(
+                            text = "悬浮窗可直接拖动到任意位置，位置与不透明度都会被记住。",
+                            style = OsText.micro,
+                            color = c.textTertiary,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { vm.exportFpsCsv() }, enabled = records.isNotEmpty()) {
                             Text("导出 CSV")
@@ -325,7 +235,7 @@ private fun FpsTab(vm: DeviceViewModel) {
 
         item {
             SectionCard(title = "分析窗口") {
-                Column(Modifier.padding(vertical = 5.dp)) {
+                Column(Modifier.padding(vertical = 4.dp)) {
                     SegmentedTabs(
                         tabs = FpsWindow.entries.map { it.label },
                         selectedIndex = window,
@@ -334,8 +244,8 @@ private fun FpsTab(vm: DeviceViewModel) {
                     Spacer(Modifier.height(12.dp))
                     Text(
                         text = "图表类型",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                        style = OsText.caption,
+                        color = c.textSecondary,
                     )
                     Spacer(Modifier.height(6.dp))
                     SegmentedTabs(
@@ -345,10 +255,10 @@ private fun FpsTab(vm: DeviceViewModel) {
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "已记录 ${records.size} 条 · 当前窗口 ${windowed.size} 条" +
-                            " · 图中 ${bars} 个点",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                        text = "已记录 ${records.size} 条 · 时长 $elapsedText" +
+                            " · 当前窗口 ${windowed.size} 条 · 图中 ${bars} 个点",
+                        style = OsText.micro,
+                        color = c.textTertiary,
                     )
                 }
             }
@@ -360,18 +270,18 @@ private fun FpsTab(vm: DeviceViewModel) {
             // 停止记录后再统一绘图分析。
             item {
                 SectionCard(title = "正在记录") {
-                    Column(Modifier.padding(vertical = 4.dp)) {
+                    Column(Modifier.padding(vertical = 3.dp)) {
                         InfoRow("已记录", "${records.size} 条", emphasis = true)
+                        InfoRow("记录时长", elapsedText, emphasis = true)
                         InfoRow("当前帧率", "%.1f FPS".format(liveSample.fps))
-                        InfoRow("记录时长", "约 ${records.size} 秒")
                         InfoRow("当前 CPU", "%.0f%%".format(latest?.cpuLoad ?: 0f))
                         InfoRow("当前内存", "%.0f%%".format(latest?.memUsedPercent ?: 0f))
                         Spacer(Modifier.height(6.dp))
                         Text(
                             text = "记录期间不绘制图表，避免绘图开销污染帧率数据；" +
                                 "停止记录后会自动生成折线 / 柱状分析图。",
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            style = OsText.micro,
+                            color = c.textTertiary,
                         )
                     }
                 }
@@ -382,8 +292,8 @@ private fun FpsTab(vm: DeviceViewModel) {
                     Text(
                         text = "开启「开始记录」后每秒留档一条完整指标。5 秒窗口不足以判断是否卡顿，" +
                             "建议至少记录 1 分钟，停止后再看分析图。",
-                        style = MiuixTheme.textStyles.footnote1,
-                        color = MiuixTheme.colorScheme.onBackgroundVariant,
+                        style = OsText.label,
+                        color = c.textSecondary,
                         modifier = Modifier.padding(vertical = 4.dp),
                     )
                 }
@@ -391,7 +301,7 @@ private fun FpsTab(vm: DeviceViewModel) {
         } else {
             item {
                 SectionCard(title = "帧率") {
-                    Column(Modifier.padding(vertical = 3.dp)) {
+                    Column(Modifier.padding(vertical = 2.dp)) {
                         MetricChartCard(
                             title = "实时帧率",
                             values = downsample(windowed.map { it.fps }, bars),
@@ -402,7 +312,7 @@ private fun FpsTab(vm: DeviceViewModel) {
                             axisStartLabel = axisStart,
                             line = lineMode,
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         MetricChartCard(
                             title = "平均帧耗时",
                             values = downsample(windowed.map { it.avgFrameMs }, bars),
@@ -414,7 +324,7 @@ private fun FpsTab(vm: DeviceViewModel) {
                             axisStartLabel = axisStart,
                             line = lineMode,
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         MetricChartCard(
                             title = "最大帧耗时",
                             values = downsample(windowed.map { it.maxFrameMs }, bars),
@@ -432,7 +342,7 @@ private fun FpsTab(vm: DeviceViewModel) {
 
             item {
                 SectionCard(title = "同期系统指标") {
-                    Column(Modifier.padding(vertical = 3.dp)) {
+                    Column(Modifier.padding(vertical = 2.dp)) {
                         MetricChartCard(
                             title = "CPU 总占用",
                             values = downsample(windowed.map { it.cpuLoad }, bars),
@@ -443,7 +353,7 @@ private fun FpsTab(vm: DeviceViewModel) {
                             axisStartLabel = axisStart,
                             line = lineMode,
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         MetricChartCard(
                             title = "GPU 频率",
                             values = downsample(
@@ -457,7 +367,7 @@ private fun FpsTab(vm: DeviceViewModel) {
                             axisStartLabel = axisStart,
                             line = lineMode,
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         MetricChartCard(
                             title = "内存占用",
                             values = downsample(windowed.map { it.memUsedPercent }, bars),
@@ -468,7 +378,7 @@ private fun FpsTab(vm: DeviceViewModel) {
                             axisStartLabel = axisStart,
                             line = lineMode,
                         )
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         MetricChartCard(
                             title = "整机功耗",
                             values = downsample(windowed.map { it.powerMw }, bars),
@@ -485,7 +395,7 @@ private fun FpsTab(vm: DeviceViewModel) {
 
             item {
                 SectionCard(title = "各核心占用（最新一条）") {
-                    Column(Modifier.padding(vertical = 5.dp)) {
+                    Column(Modifier.padding(vertical = 4.dp)) {
                         CoreBarsChart(
                             coreIndexes = coreIndexes,
                             loads = latest?.coreLoads ?: emptyList(),
@@ -516,8 +426,8 @@ private fun FpsTab(vm: DeviceViewModel) {
                         Text(
                             text = "导出 CSV 后可结合每核占用与频率，判断卡顿来自 CPU 降频、" +
                                 "GPU 瓶颈还是内存压力。",
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            style = OsText.micro,
+                            color = c.textTertiary,
                         )
                     }
                 }
@@ -550,14 +460,14 @@ private fun FpsTab(vm: DeviceViewModel) {
                     if (gfxInfo.isBlank()) {
                         Text(
                             text = "无法读取系统帧率信息",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            style = OsText.label,
+                            color = c.textSecondary,
                         )
                     } else {
                         Text(
                             text = gfxInfo,
-                            style = MiuixTheme.textStyles.footnote2,
-                            color = MiuixTheme.colorScheme.onBackgroundVariant,
+                            style = OsText.micro,
+                            color = c.textTertiary,
                         )
                     }
                 }

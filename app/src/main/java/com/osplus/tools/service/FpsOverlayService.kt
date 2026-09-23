@@ -1,5 +1,6 @@
 package com.osplus.tools.service
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -13,6 +14,8 @@ import android.os.IBinder
 import android.provider.Settings
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
@@ -21,14 +24,16 @@ import com.osplus.tools.OsPlusApplication
 import com.osplus.tools.R
 import com.osplus.tools.core.FpsOverlayState
 import com.osplus.tools.core.FpsRecorder
-import kotlinx.coroutines.flow.combine
 import com.osplus.tools.core.LiveMetrics
+import com.osplus.tools.core.Preferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * 跨应用帧率悬浮窗。
@@ -39,11 +44,17 @@ import kotlinx.coroutines.launch
  * 因此它同时充当「跨应用帧率采样源」——服务启动后驱动共享的 [FpsRecorder]，
  * 应用退到后台时录制仍会继续（前台服务保活 + 悬浮窗持续收到帧回调），
  * 从而支持在**其他应用**中记录帧率。
+ *
+ * 悬浮窗可拖动，位置与不透明度都会持久化，下次启动沿用上次的落点。
  */
 class FpsOverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private var overlayView: TextView? = null
+    private var layoutParams: WindowManager.LayoutParams? = null
+
+    /** 用户设定的不透明度；拖动时临时提到 1.0，松手后恢复 */
+    private var userAlpha = 0.92f
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -58,6 +69,8 @@ class FpsOverlayService : Service() {
         }
         FpsOverlayState.set(true)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        userAlpha = Preferences.overlayAlpha(this).coerceIn(FpsOverlayState.MIN_ALPHA, 1f)
+        FpsOverlayState.setAlpha(userAlpha)
         addOverlay()
 
         // 与录制功能共用同一个逐帧统计器，避免两套 Choreographer 互相干扰
@@ -79,8 +92,19 @@ class FpsOverlayService : Service() {
                     }
                 }
         }
+        // 界面调整不透明度后立即作用到窗口，无需重启服务
+        scope.launch {
+            FpsOverlayState.alpha.collectLatest { value ->
+                userAlpha = value
+                layoutParams?.let { p ->
+                    p.alpha = value
+                    overlayView?.let { v -> runCatching { windowManager.updateViewLayout(v, p) } }
+                }
+            }
+        }
     }
 
+    @SuppressLint("ClickableViewAccessibility")
     private fun addOverlay() {
         if (overlayView != null) return
         // 圆角深色底 + 内边距：直接压在应用图标上时文字几乎不可读
@@ -112,11 +136,81 @@ class FpsOverlayService : Service() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 40
-            y = 320
+            x = Preferences.overlayX(this@FpsOverlayService)
+            y = Preferences.overlayY(this@FpsOverlayService)
+            alpha = userAlpha
         }
+        attachDragHandler(view, params)
         runCatching { windowManager.addView(view, params) }
         overlayView = view
+        layoutParams = params
+    }
+
+    /**
+     * 拖动悬浮窗。
+     *
+     * 用 rawX/rawY 的位移增量直接累加到窗口偏移上，不依赖控件自身的布局坐标，
+     * 因此不会出现「手指跟窗口错位」的问题；松手时把落点写回偏好。
+     */
+    private fun attachDragHandler(view: View, params: WindowManager.LayoutParams) {
+        var downRawX = 0f
+        var downRawY = 0f
+        var startX = 0
+        var startY = 0
+        var dragging = false
+
+        view.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startX = params.x
+                    startY = params.y
+                    dragging = false
+                    // 拖动过程中保证看得清
+                    params.alpha = 1f
+                    runCatching { windowManager.updateViewLayout(view, params) }
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downRawX
+                    val dy = event.rawY - downRawY
+                    if (!dragging && (kotlin.math.abs(dx) > DRAG_SLOP || kotlin.math.abs(dy) > DRAG_SLOP)) {
+                        dragging = true
+                    }
+                    if (dragging) {
+                        params.x = clampX(startX + dx.roundToInt(), view)
+                        params.y = clampY(startY + dy.roundToInt(), view)
+                        runCatching { windowManager.updateViewLayout(view, params) }
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    params.alpha = userAlpha
+                    runCatching { windowManager.updateViewLayout(view, params) }
+                    if (dragging) {
+                        Preferences.setOverlayPosition(this, params.x, params.y)
+                    }
+                    dragging = false
+                    true
+                }
+
+                else -> false
+            }
+        }
+    }
+
+    /** 限制在屏幕内，避免被拖出可视区域后找不回来 */
+    private fun clampX(x: Int, view: View): Int {
+        val max = (resources.displayMetrics.widthPixels - view.width).coerceAtLeast(0)
+        return x.coerceIn(0, max)
+    }
+
+    private fun clampY(y: Int, view: View): Int {
+        val max = (resources.displayMetrics.heightPixels - view.height).coerceAtLeast(0)
+        return y.coerceIn(0, max)
     }
 
     private fun buildNotification(): Notification {
@@ -128,7 +222,7 @@ class FpsOverlayService : Service() {
         )
         return NotificationCompat.Builder(this, OsPlusApplication.CHANNEL_FPS)
             .setContentTitle("OSPlus 帧率监视")
-            .setContentText("正在显示实时帧率")
+            .setContentText("正在显示实时帧率，可拖动调整位置")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(intent)
@@ -140,6 +234,7 @@ class FpsOverlayService : Service() {
         scope.cancel()
         overlayView?.let { v -> runCatching { windowManager.removeView(v) } }
         overlayView = null
+        layoutParams = null
         // 应用内正在录制时不要停掉统计器，否则录制会被中断
         if (!FpsRecorder.appRetained) FpsRecorder.stop()
         super.onDestroy()
@@ -148,6 +243,8 @@ class FpsOverlayService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 0x0521
 
+        /** 判定为「拖动」而非「点击」的位移阈值（像素） */
+        private const val DRAG_SLOP = 8f
 
         fun start(context: Context) {
             val intent = Intent(context, FpsOverlayService::class.java)

@@ -7,6 +7,10 @@ local.properties
 captures/
 app/build/
 build/
+.kotlin/
+
+# ----- 本地 Agent 工作目录（非工程文件） -----
+.workbuddy-ai/
 
 # ----- 调试 / 构建产物残留（非工程文件） -----
 *.log

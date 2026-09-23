@@ -155,7 +155,7 @@ fun SettingsScreen(vm: DeviceViewModel) {
             SectionCard(title = "关于") {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("应用", "OSPlus")
-                    InfoRow("版本", "1.0.0")
+                    InfoRow("版本", "1.1.0")
                     InfoRow("包名", context.packageName)
                     InfoRow("设备", "${Build.MANUFACTURER} ${Build.MODEL}")
                     InfoRow("系统", "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")

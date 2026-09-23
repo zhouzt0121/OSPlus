@@ -39,6 +39,9 @@ import com.osplus.tools.ui.components.SectionCard
 import com.osplus.tools.ui.components.SegmentedTabs
 import com.osplus.tools.ui.components.SwitchRow
 import com.osplus.tools.ui.components.UsageBar
+import com.osplus.tools.ui.components.axisSpanLabel
+import com.osplus.tools.ui.components.downsample
+import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Slider
@@ -46,7 +49,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-fun PowerScreen(vm: DeviceViewModel) {
+fun PowerDetailScreen(vm: DeviceViewModel) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = remember { listOf("耗电统计", "充电统计", "充电控制") }
 
@@ -82,7 +85,7 @@ private fun PowerUsageTab(vm: DeviceViewModel) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
+            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -177,34 +180,42 @@ private fun PowerUsageTab(vm: DeviceViewModel) {
 private fun ChargeStatsTab(vm: DeviceViewModel) {
     val history by vm.history.collectAsStateWithLifecycle()
     val battery by vm.battery.collectAsStateWithLifecycle()
+    // 趋势窗口随运行时间累积（1 秒 1 条），绘制前按固定槽位降采样
+    val trendSlots = 60
+    val trendAxis = axisSpanLabel(history.size)
+    val trendSpan = spanText(history.size)
     val currentMa = battery.currentNowUa / 1000f
     val capacityMah = if (battery.chargeFullUah > 0) battery.chargeFullUah / 1000f else -1f
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
+            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            SectionCard(title = "功耗 · 5 秒窗口") {
+            SectionCard(title = "功耗 · 已累积 $trendSpan") {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "整机功耗",
-                        values = history.map { it.powerMw },
+                        values = downsample(history.map { it.powerMw }, trendSlots),
                         maxValue = autoMax(history.map { it.powerMw }, 0f, 500f),
                         color = ChartColors.power,
                         unit = "mW",
+                        slots = trendSlots,
+                        axisStartLabel = trendAxis,
                     )
                     Spacer(Modifier.height(10.dp))
                     MetricChartCard(
                         title = "电池温度",
-                        values = history.map { it.batteryTempC ?: 0f },
+                        values = downsample(history.map { it.batteryTempC ?: 0f }, trendSlots),
                         maxValue = autoMax(history.map { it.batteryTempC ?: 0f }, 0f, 50f),
                         color = ChartColors.temp,
                         unit = "℃",
                         valueFormatter = { "%.1f".format(it) },
+                        slots = trendSlots,
+                        axisStartLabel = trendAxis,
                     )
                 }
             }
@@ -246,7 +257,7 @@ private fun ChargeControlTab(vm: DeviceViewModel) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
+            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {

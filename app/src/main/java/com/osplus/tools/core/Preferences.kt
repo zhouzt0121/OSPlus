@@ -15,6 +15,13 @@ object Preferences {
     private const val KEY_AUTO_REFRESH = "auto_refresh_enabled"
     private const val KEY_THEME_MODE = "theme_mode"
     private const val KEY_MONET = "theme_monet"
+    private const val KEY_OVERLAY_X = "overlay_x"
+    private const val KEY_OVERLAY_Y = "overlay_y"
+    private const val KEY_OVERLAY_ALPHA = "overlay_alpha"
+
+    /** 悬浮窗位置尚未记录时的默认落点 */
+    private const val OVERLAY_DEFAULT_X = 40
+    private const val OVERLAY_DEFAULT_Y = 320
 
     private fun sp(context: Context) =
         context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -49,5 +56,27 @@ object Preferences {
 
     fun setMonetEnabled(context: Context, enabled: Boolean) {
         sp(context).edit().putBoolean(KEY_MONET, enabled).apply()
+    }
+
+    // ---------------- 帧率悬浮窗的拖动位置与不透明度 ----------------
+
+    /** 悬浮窗水平偏移（像素，相对屏幕左上角） */
+    fun overlayX(context: Context): Int =
+        sp(context).getInt(KEY_OVERLAY_X, OVERLAY_DEFAULT_X)
+
+    /** 悬浮窗垂直偏移（像素，相对屏幕左上角） */
+    fun overlayY(context: Context): Int =
+        sp(context).getInt(KEY_OVERLAY_Y, OVERLAY_DEFAULT_Y)
+
+    fun setOverlayPosition(context: Context, x: Int, y: Int) {
+        sp(context).edit().putInt(KEY_OVERLAY_X, x).putInt(KEY_OVERLAY_Y, y).apply()
+    }
+
+    /** 悬浮窗不透明度 0.25~1.0 */
+    fun overlayAlpha(context: Context): Float =
+        sp(context).getFloat(KEY_OVERLAY_ALPHA, 0.92f)
+
+    fun setOverlayAlpha(context: Context, alpha: Float) {
+        sp(context).edit().putFloat(KEY_OVERLAY_ALPHA, alpha).apply()
     }
 }

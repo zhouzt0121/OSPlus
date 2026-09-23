@@ -15,7 +15,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -23,46 +22,34 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.CpuDataSource
 import com.osplus.tools.core.GpuDataSource
 import com.osplus.tools.ui.components.ChartColors
+import com.osplus.tools.ui.components.ChoiceChip
 import com.osplus.tools.ui.components.CoreBarsChart
 import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.MetricChartCard
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
-import com.osplus.tools.ui.components.SegmentedTabs
 import com.osplus.tools.ui.components.UsageBar
+import com.osplus.tools.ui.components.axisSpanLabel
+import com.osplus.tools.ui.components.downsample
+import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/** CPU 详情：实时负载、核心簇频率、调速器切换与频率挡位锁定 */
 @Composable
-fun PerfScreen(vm: DeviceViewModel) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
-    val tabs = remember { listOf("CPU", "GPU", "内存") }
-
-    Column(Modifier.fillMaxSize()) {
-        SegmentedTabs(
-            tabs = tabs,
-            selectedIndex = tab,
-            onSelect = { tab = it },
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-        )
-        when (tab) {
-            0 -> CpuTab(vm)
-            1 -> GpuTab(vm)
-            else -> MemoryTab(vm)
-        }
-    }
-}
-
-@Composable
-private fun CpuTab(vm: DeviceViewModel) {
+fun CpuDetailScreen(vm: DeviceViewModel) {
     val history by vm.history.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
     val coreIndexes by vm.coreIndexes.collectAsStateWithLifecycle()
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
     val latest = history.lastOrNull()
+    // 趋势窗口随运行时间累积（1 秒 1 条），绘制前按固定槽位降采样
+    val trendSlots = 60
+    val trendAxis = axisSpanLabel(history.size)
+    val trendSpan = spanText(history.size)
 
     var freqOptions by remember { mutableStateOf<List<Long>>(emptyList()) }
     var selectedCore by remember { mutableIntStateOf(0) }
@@ -92,19 +79,21 @@ private fun CpuTab(vm: DeviceViewModel) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
+            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            SectionCard(title = "CPU 负载 · 5 秒窗口") {
+            SectionCard(title = "CPU 负载 · 已累积 $trendSpan") {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "总占用",
-                        values = history.map { it.cpuLoad },
+                        values = downsample(history.map { it.cpuLoad }, trendSlots),
                         maxValue = 100f,
                         color = ChartColors.cpu,
                         unit = "%",
+                        slots = trendSlots,
+                        axisStartLabel = trendAxis,
                     )
                     Spacer(Modifier.height(10.dp))
                     CoreBarsChart(
@@ -175,18 +164,15 @@ private fun CpuTab(vm: DeviceViewModel) {
                         ) {
                             val currentGov = cpu.cores.firstOrNull()?.governor
                             governors.forEach { gov ->
-                                Button(
+                                ChoiceChip(
+                                    text = gov,
+                                    selected = gov == currentGov,
+                                    enabled = rootAvailable,
                                     onClick = {
                                         val core = coreIndexes.firstOrNull() ?: 0
                                         vm.setCpuGovernor(core, gov)
                                     },
-                                    enabled = rootAvailable,
-                                ) {
-                                    Text(
-                                        text = if (gov == currentGov) "✓ $gov" else gov,
-                                        style = MiuixTheme.textStyles.footnote1,
-                                    )
-                                }
+                                )
                             }
                         }
                     }
@@ -208,15 +194,11 @@ private fun CpuTab(vm: DeviceViewModel) {
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         coreIndexes.forEach { c ->
-                            Button(
+                            ChoiceChip(
+                                text = "核心 $c",
+                                selected = c == selectedCore,
                                 onClick = { selectedCore = c },
-                                enabled = true,
-                            ) {
-                                Text(
-                                    text = if (c == selectedCore) "\u2713 \u6838\u5fc3 $c" else "\u6838\u5fc3 $c",
-                                    style = MiuixTheme.textStyles.footnote1,
-                                )
-                            }
+                            )
                         }
                     }
 
@@ -348,8 +330,9 @@ private fun CpuTab(vm: DeviceViewModel) {
     }
 }
 
+/** GPU 详情：频率/负载曲线、设备信息、调速器与频率上限 */
 @Composable
-private fun GpuTab(vm: DeviceViewModel) {
+fun GpuDetailScreen(vm: DeviceViewModel) {
     val history by vm.history.collectAsStateWithLifecycle()
     val gpu by vm.gpu.collectAsStateWithLifecycle()
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
@@ -357,31 +340,44 @@ private fun GpuTab(vm: DeviceViewModel) {
     val gpuFreqState by vm.gpuFreqState.collectAsStateWithLifecycle()
     var gpuGovernors by remember { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(Unit) { gpuGovernors = GpuDataSource.availableGovernors() }
+    val trendSlots = 60
+    val trendAxis = axisSpanLabel(history.size)
+    val trendSpan = spanText(history.size)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
+            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            SectionCard(title = "GPU · 5 秒窗口") {
+            SectionCard(title = "GPU · 已累积 $trendSpan") {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "频率",
-                        values = history.map { if (it.gpuMhz > 0) it.gpuMhz.toFloat() else 0f },
+                        values = downsample(
+                            history.map { if (it.gpuMhz > 0) it.gpuMhz.toFloat() else 0f },
+                            trendSlots,
+                        ),
                         maxValue = autoMax(history.map { it.gpuMhz.toFloat() }, gpu.maxMhz.toFloat(), 800f),
                         color = ChartColors.gpu,
                         unit = "MHz",
+                        slots = trendSlots,
+                        axisStartLabel = trendAxis,
                     )
                     Spacer(Modifier.height(10.dp))
                     MetricChartCard(
                         title = "负载",
-                        values = history.map { if (it.gpuLoad >= 0) it.gpuLoad.toFloat() else 0f },
+                        values = downsample(
+                            history.map { if (it.gpuLoad >= 0) it.gpuLoad.toFloat() else 0f },
+                            trendSlots,
+                        ),
                         maxValue = 100f,
                         color = ChartColors.cpu,
                         unit = "%",
+                        slots = trendSlots,
+                        axisStartLabel = trendAxis,
                     )
                 }
             }
@@ -423,15 +419,12 @@ private fun GpuTab(vm: DeviceViewModel) {
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         governors.forEach { gov ->
-                            Button(
-                                onClick = { vm.setGpuGovernor(gov) },
+                            ChoiceChip(
+                                text = gov,
+                                selected = gov == gpu.governor,
                                 enabled = rootAvailable,
-                            ) {
-                                Text(
-                                    text = if (gov == gpu.governor) "✓ " + gov else gov,
-                                    style = MiuixTheme.textStyles.footnote1,
-                                )
-                            }
+                                onClick = { vm.setGpuGovernor(gov) },
+                            )
                         }
                     }
                     gpuApplyState?.let { (req, applied) ->
@@ -513,8 +506,9 @@ private fun GpuTab(vm: DeviceViewModel) {
     }
 }
 
+/** 内存详情：占用/SWAP 曲线、内存明细、ZRAM 容量与 swappiness 调节 */
 @Composable
-private fun MemoryTab(vm: DeviceViewModel) {
+fun MemDetailScreen(vm: DeviceViewModel) {
     val history by vm.history.collectAsStateWithLifecycle()
     val mem by vm.mem.collectAsStateWithLifecycle()
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
@@ -522,32 +516,39 @@ private fun MemoryTab(vm: DeviceViewModel) {
     val swapPercent = if (mem.swapTotalKb > 0) {
         mem.swapUsedKb * 100f / mem.swapTotalKb
     } else 0f
+    val trendSlots = 60
+    val trendAxis = axisSpanLabel(history.size)
+    val trendSpan = spanText(history.size)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
+            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            SectionCard(title = "内存 · 5 秒窗口") {
+            SectionCard(title = "内存 · 已累积 $trendSpan") {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "占用率",
-                        values = history.map { it.memUsedPercent },
+                        values = downsample(history.map { it.memUsedPercent }, trendSlots),
                         maxValue = 100f,
                         color = ChartColors.mem,
                         unit = "%",
+                        slots = trendSlots,
+                        axisStartLabel = trendAxis,
                     )
                     Spacer(Modifier.height(10.dp))
                     MetricChartCard(
                         title = "SWAP 占用",
-                        values = history.map { swapPercent },
+                        values = downsample(history.map { swapPercent }, trendSlots),
                         maxValue = 100f,
                         color = ChartColors.gpu,
                         unit = "%",
                         subtitle = "${fmtGb(mem.swapUsedKb)} / ${fmtGb(mem.swapTotalKb)}",
+                        slots = trendSlots,
+                        axisStartLabel = trendAxis,
                     )
                 }
             }

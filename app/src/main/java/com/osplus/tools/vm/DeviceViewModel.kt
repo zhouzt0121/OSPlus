@@ -50,8 +50,8 @@ import kotlinx.coroutines.withContext
 /**
  * 全局设备数据中枢。
  *
- * 采样策略：每 [SAMPLE_INTERVAL_MS] 采集一次轻量指标，滚动保留最近 [WINDOW_MS]
- * 的数据用于绘制柱状图；较重的完整快照按较低频率刷新。
+ * 采样策略：每 [SAMPLE_INTERVAL_MS] 采集一次轻量指标，滚动保留最近
+ * [HISTORY_MAX_SAMPLES] 条数据用于绘制趋势；较重的完整快照按较低频率刷新。
  * 所有采集均在 IO 线程完成，UI 只订阅 StateFlow。
  */
 class DeviceViewModel(app: Application) : AndroidViewModel(app) {
@@ -60,11 +60,14 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         /** 采样间隔：1 秒 */
         const val SAMPLE_INTERVAL_MS = 1000L
 
-        /** 柱状图窗口：5 秒 */
-        const val WINDOW_MS = 5000L
-
-        /** 窗口内保留的采样点数 */
-        const val WINDOW_SAMPLES = (WINDOW_MS / SAMPLE_INTERVAL_MS).toInt()
+        /**
+         * 趋势数据保留上限：1 秒 1 条 → 1800 条 = 30 分钟。
+         *
+         * 早期版本只留 5 条（5 秒），实时趋势几乎看不出走势。
+         * 改成累积保留后，曲线会随运行时间不断变长；到达上限后按滚动窗口
+         * 丢弃最早的一条，内存占用恒定在 1800 条采样量级。
+         */
+        const val HISTORY_MAX_SAMPLES = 1_800
 
         /** 功耗计算的滑动窗口长度 */
         private const val POWER_WINDOW_MS = 6_000L
@@ -144,6 +147,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             AppThemeMode.valueOf(Preferences.themeModeName(context))
         }.getOrDefault(AppThemeMode.System)
         _monet.value = Preferences.isMonetEnabled(context)
+        FpsOverlayState.setAlpha(Preferences.overlayAlpha(context))
         viewModelScope.launch {
             _rootAvailable.value = Shell.isRootAvailable(force = true)
         }
@@ -280,7 +284,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             batteryTempC = tick.batteryTempC,
         )
 
-        _history.value = (_history.value + sample).takeLast(WINDOW_SAMPLES)
+        _history.value = (_history.value + sample).takeLast(HISTORY_MAX_SAMPLES)
 
         // 帧率记录：同时留档同期系统指标，便于事后定位卡顿成因
         if (_fpsRecording.value) {
@@ -449,6 +453,15 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 悬浮窗服务的真实运行状态（不是偏好值） */
     val overlayRunning: StateFlow<Boolean> = FpsOverlayState.running
+
+    /** 悬浮窗不透明度（0.25~1.0），改动会立即作用到悬浮窗 */
+    val overlayAlpha: StateFlow<Float> = FpsOverlayState.alpha
+
+    fun setOverlayAlpha(value: Float) {
+        val v = value.coerceIn(FpsOverlayState.MIN_ALPHA, 1f)
+        FpsOverlayState.setAlpha(v)
+        Preferences.setOverlayAlpha(context, v)
+    }
 
     fun startFpsRecording() {
         FpsRecorder.appRetained = true

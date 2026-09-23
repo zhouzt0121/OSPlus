@@ -58,7 +58,7 @@ object ProcessDataSource {
         }
 
     /** 解析一行 top 输出：cpu% res pid user state args... */
-    internal fun parseLine(line: String): ParsedProcess? {
+    private fun parseLine(line: String): ParsedProcess? {
         val trimmed = line.trim()
         if (trimmed.isEmpty()) return null
         val cols = trimmed.split(Regex("\\s+"), limit = 6)
@@ -69,7 +69,7 @@ object ProcessDataSource {
         return ParsedProcess(cpu, resKb, pid, cols[3], cols[4], cols[5])
     }
 
-    internal data class ParsedProcess(
+    private data class ParsedProcess(
         val cpu: Float,
         val resKb: Long,
         val pid: Int,
@@ -79,7 +79,7 @@ object ProcessDataSource {
     )
 
     /** 解析 "142M" / "3.7M" / "9160" 形式的常驻内存 */
-    internal fun parseRes(text: String): Long {
+    private fun parseRes(text: String): Long {
         val t = text.trim()
         if (t.isEmpty()) return 0L
         val unit = t.last()
@@ -97,7 +97,7 @@ object ProcessDataSource {
      *
      * 命名规则为 u{userId}_a{appId 去掉首位 1}，例如 uid 10525 → "u0_a525"。
      */
-    internal fun uidFromUser(user: String): Int = when (user) {
+    private fun uidFromUser(user: String): Int = when (user) {
         "root" -> 0
         "system" -> 1000
         "shell" -> 2000
