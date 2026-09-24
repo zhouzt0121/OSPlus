@@ -96,13 +96,7 @@ class FpsOverlayService : Service() {
         }
         // 界面调整不透明度后立即作用到窗口，无需重启服务
         scope.launch {
-            FpsOverlayState.alpha.collectLatest { value ->
-                userAlpha = value
-                layoutParams?.let { p ->
-                    p.alpha = value
-                    overlayView?.let { v -> runCatching { windowManager.updateViewLayout(v, p) } }
-                }
-            }
+            FpsOverlayState.alpha.collectLatest { value -> applyAlpha(value) }
         }
     }
 
@@ -122,6 +116,8 @@ class FpsOverlayService : Service() {
             text = "--   --%   --%"
             this.background = background
             elevation = 8f * resources.displayMetrics.density
+            // 视觉透明度挂在 View 上，见 applyAlpha 的说明
+            alpha = userAlpha
         }
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -140,12 +136,32 @@ class FpsOverlayService : Service() {
             gravity = Gravity.TOP or Gravity.START
             x = Preferences.overlayX(this@FpsOverlayService)
             y = Preferences.overlayY(this@FpsOverlayService)
-            alpha = userAlpha
+            // 窗口 alpha 恒为 1.0，绝不能用它表达「半透明」——原因见 applyAlpha 的说明
+            alpha = 1f
         }
         attachTouchHandler(view, params)
         runCatching { windowManager.addView(view, params) }
         overlayView = view
         layoutParams = params
+    }
+
+    /**
+     * 设置悬浮窗的视觉透明度。
+     *
+     * **必须改 `View.alpha`，不能改 `WindowManager.LayoutParams.alpha`。**
+     *
+     * Android 12 起引入了「不受信任的触摸事件」限制：`TYPE_APPLICATION_OVERLAY` 窗口的
+     * `LayoutParams.alpha` 一旦小于等于 `InputManager.getMaximumObscuringOpacityForTouch()`
+     * （当前为 **0.8**），该窗口就被判定为「遮挡不足」，**系统不再把触摸事件投递给它**，
+     * 于是轻点 / 长按 / 拖动全部失效——logcat 会打印
+     * `Untrusted touch due to occlusion by <pkg>`。
+     *
+     * 窗口 alpha 保持 1.0 后，窗口在输入层面始终是「足够遮挡」的正常触摸目标；
+     * 透明度改由 View 层承担，只影响绘制、不影响输入分发，观感与之前完全一致。
+     */
+    private fun applyAlpha(value: Float) {
+        userAlpha = value
+        overlayView?.alpha = value
     }
 
     /**
@@ -183,9 +199,8 @@ class FpsOverlayService : Service() {
                     startX = params.x
                     startY = params.y
                     dragging = false
-                    // 拖动过程中保证看得清
-                    params.alpha = 1f
-                    runCatching { windowManager.updateViewLayout(view, params) }
+                    // 拖动过程中保证看得清；只动 View 的透明度，不动窗口 alpha
+                    view.alpha = 1f
                     view.postDelayed(longPress, LONG_PRESS_MS)
                     true
                 }
@@ -207,8 +222,7 @@ class FpsOverlayService : Service() {
 
                 MotionEvent.ACTION_UP -> {
                     view.removeCallbacks(longPress)
-                    params.alpha = userAlpha
-                    runCatching { windowManager.updateViewLayout(view, params) }
+                    view.alpha = userAlpha
                     if (dragging) {
                         Preferences.setOverlayPosition(this, params.x, params.y)
                     } else if (SystemClock.uptimeMillis() - downTime < LONG_PRESS_MS) {
@@ -222,8 +236,7 @@ class FpsOverlayService : Service() {
 
                 MotionEvent.ACTION_CANCEL -> {
                     view.removeCallbacks(longPress)
-                    params.alpha = userAlpha
-                    runCatching { windowManager.updateViewLayout(view, params) }
+                    view.alpha = userAlpha
                     dragging = false
                     true
                 }

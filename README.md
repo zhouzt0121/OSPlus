@@ -165,6 +165,35 @@ GPU 调速器的教训尤其值得记：最初硬编码了 4 个常见调速器�
 用户一点反而把本就没运行的服务「关掉」。服务在 `onCreate/onDestroy` 写入真实状态，
 界面订阅它；应用启动时若偏好为开则重新拉起服务，使状态与实际一致。
 
+### 6.1 悬浮窗透明度必须改 View，不能改 Window（Android 12+ 触摸限制）
+
+1.2.0 曾出现一个 bug：**悬浮窗不透明度调到 50% 以下后，轻点 / 长按 / 拖动全部失效**。
+
+根因是 Android 12 引入的「**不受信任的触摸事件**」限制。对
+`TYPE_APPLICATION_OVERLAY` 窗口，系统会看它的 `LayoutParams.alpha`：
+
+- `alpha > InputManager.getMaximumObscuringOpacityForTouch()`（当前 **0.8**）→ 窗口「足够遮挡」，
+  是正常的触摸目标；
+- `alpha <= 0.8` → 窗口被判定为「遮挡不足」，**系统不再把触摸事件投递给它**，
+  于是整个悬浮窗变成只显示、不可交互。logcat 会打印
+  `Untrusted touch due to occlusion by com.osplus.tools`。
+
+而当时的不透明度正是直接写 `LayoutParams.alpha`，因此滑块一拉低，悬浮窗就「死」了。
+
+**修法：窗口 `alpha` 恒为 `1.0`，视觉透明度改由 `View.alpha` 承担。**
+
+```kotlin
+params.alpha = 1f          // 窗口在输入层面永远是「足够遮挡」的触摸目标
+overlayView.alpha = value  // 透明度只影响绘制，不影响输入分发
+```
+
+注意这与官方文档里「要让触摸**穿透**下去，必须在窗口级别降低不透明度」并不矛盾——
+那是「主动放弃接收触摸」的场景，需求相反。我们既要半透明外观、又要自己接收手势，
+所以只能把两层 alpha 拆开用。
+
+顺带一提：这个阈值是**窗口**层面的，`View.alpha` 无论调到多低都不会触发该限制，
+因此修复后 25% 的不透明度依然可点可拖。
+
 ### 7. 进程列表
 
 应用无法读取其他进程的 `/proc/<pid>`。改用 root 执行一次：
