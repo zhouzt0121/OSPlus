@@ -141,12 +141,12 @@ fun SettingsScreen(vm: DeviceViewModel) {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     SwitchRow(
                         label = "实时采样",
-                        summary = "每秒采样一次，柱状图展示最近 5 秒数据",
+                        summary = "每秒采样一次，实时趋势以折线绘制，记录时长随采样持续增长",
                         checked = autoRefresh,
                         onCheckedChange = { vm.setAutoRefresh(it) },
                     )
                     InfoRow("采样间隔", "${DeviceViewModelInterval()} 毫秒")
-                    InfoRow("窗口长度", "5 秒")
+                    InfoRow("记录上限", "30 分钟（1800 条）")
                 }
             }
         }
@@ -155,7 +155,7 @@ fun SettingsScreen(vm: DeviceViewModel) {
             SectionCard(title = "关于") {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("应用", "OSPlus")
-                    InfoRow("版本", "1.1.0")
+                    InfoRow("版本", "1.2.0")
                     InfoRow("包名", context.packageName)
                     InfoRow("设备", "${Build.MANUFACTURER} ${Build.MODEL}")
                     InfoRow("系统", "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")

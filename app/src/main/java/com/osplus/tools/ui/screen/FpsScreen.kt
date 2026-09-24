@@ -92,8 +92,6 @@ fun FpsScreen(vm: DeviceViewModel) {
     val overlayAlpha by vm.overlayAlpha.collectAsStateWithLifecycle()
     val overlayGranted = remember { Settings.canDrawOverlays(context) }
     var window by rememberSaveable { mutableIntStateOf(1) }
-    // 记录分析默认用折线，观察波动更直观；可切回柱状对比单点高低
-    var lineMode by rememberSaveable { mutableStateOf(true) }
 
     // 注意：这里**不能**在 onDispose 里停止录制。
     // 切到其他页面 / 其他应用都会让本 Composable 离开组合，
@@ -128,8 +126,8 @@ fun FpsScreen(vm: DeviceViewModel) {
     } ?: 0L
     val elapsedText = fmtElapsed(elapsedMs)
 
-    // 折线可容纳更多采样点，柱状图过多会挤在一起
-    val bars = if (lineMode) 60 else 30
+    // 折线降采样槽位：长窗口下按此数量抽稀后绘制
+    val bars = 60
     // 时间轴左端文案随窗口变化
     val axisStart = when (selected) {
         FpsWindow.All -> "最早"
@@ -146,7 +144,8 @@ fun FpsScreen(vm: DeviceViewModel) {
                 Column(Modifier.padding(vertical = 2.dp)) {
                     SwitchRow(
                         label = "开始记录",
-                        summary = "每秒留档一条：帧率 + 每核占用/频率 + GPU + 内存 + 功耗 + 温度",
+                        summary = "每秒留档一条：帧率 + 每核占用/频率 + GPU + 内存 + 功耗 + 温度" +
+                            "（也可轻点桌面悬浮窗开关）",
                         checked = recording,
                         onCheckedChange = {
                             if (it) vm.startFpsRecording() else vm.stopFpsRecording()
@@ -192,7 +191,8 @@ fun FpsScreen(vm: DeviceViewModel) {
                             valueRange = FpsOverlayState.MIN_ALPHA..1f,
                         )
                         Text(
-                            text = "悬浮窗可直接拖动到任意位置，位置与不透明度都会被记住。",
+                            text = "悬浮窗上轻点一下即可开始 / 停止记录（记录中数值前会显示红点），" +
+                                "长按或拖动可移动到任意位置，位置与不透明度都会被记住。",
                             style = OsText.micro,
                             color = c.textTertiary,
                         )
@@ -243,18 +243,6 @@ fun FpsScreen(vm: DeviceViewModel) {
                     )
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        text = "图表类型",
-                        style = OsText.caption,
-                        color = c.textSecondary,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    SegmentedTabs(
-                        tabs = listOf("折线趋势", "柱状对比"),
-                        selectedIndex = if (lineMode) 0 else 1,
-                        onSelect = { lineMode = it == 0 },
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
                         text = "已记录 ${records.size} 条 · 时长 $elapsedText" +
                             " · 当前窗口 ${windowed.size} 条 · 图中 ${bars} 个点",
                         style = OsText.micro,
@@ -290,8 +278,8 @@ fun FpsScreen(vm: DeviceViewModel) {
             item {
                 SectionCard {
                     Text(
-                        text = "开启「开始记录」后每秒留档一条完整指标。5 秒窗口不足以判断是否卡顿，" +
-                            "建议至少记录 1 分钟，停止后再看分析图。",
+                        text = "开启「开始记录」后每秒留档一条完整指标；也可以直接轻点桌面悬浮窗开始记录。" +
+                            "记录期间不绘图，避免绘图开销污染帧率数据，停止后再统一看分析图。",
                         style = OsText.label,
                         color = c.textSecondary,
                         modifier = Modifier.padding(vertical = 4.dp),
@@ -308,9 +296,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                             maxValue = autoMax(windowed.map { it.fps }, 0f, 60f),
                             color = ChartColors.fps,
                             unit = "FPS",
-                            slots = bars,
                             axisStartLabel = axisStart,
-                            line = lineMode,
                         )
                         Spacer(Modifier.height(12.dp))
                         MetricChartCard(
@@ -320,9 +306,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                             color = ChartColors.mem,
                             unit = "ms",
                             valueFormatter = { "%.1f".format(it) },
-                            slots = bars,
                             axisStartLabel = axisStart,
-                            line = lineMode,
                         )
                         Spacer(Modifier.height(12.dp))
                         MetricChartCard(
@@ -332,9 +316,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                             color = ChartColors.power,
                             unit = "ms",
                             valueFormatter = { "%.1f".format(it) },
-                            slots = bars,
                             axisStartLabel = axisStart,
-                            line = lineMode,
                         )
                     }
                 }
@@ -349,9 +331,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                             maxValue = 100f,
                             color = ChartColors.cpu,
                             unit = "%",
-                            slots = bars,
                             axisStartLabel = axisStart,
-                            line = lineMode,
                         )
                         Spacer(Modifier.height(12.dp))
                         MetricChartCard(
@@ -363,9 +343,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                             maxValue = autoMax(windowed.map { it.gpuMhz.toFloat() }, 0f, 800f),
                             color = ChartColors.gpu,
                             unit = "MHz",
-                            slots = bars,
                             axisStartLabel = axisStart,
-                            line = lineMode,
                         )
                         Spacer(Modifier.height(12.dp))
                         MetricChartCard(
@@ -374,9 +352,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                             maxValue = 100f,
                             color = ChartColors.mem,
                             unit = "%",
-                            slots = bars,
                             axisStartLabel = axisStart,
-                            line = lineMode,
                         )
                         Spacer(Modifier.height(12.dp))
                         MetricChartCard(
@@ -385,9 +361,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                             maxValue = autoMax(windowed.map { it.powerMw }, 0f, 500f),
                             color = ChartColors.power,
                             unit = "mW",
-                            slots = bars,
                             axisStartLabel = axisStart,
-                            line = lineMode,
                         )
                     }
                 }

@@ -24,6 +24,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -80,6 +81,57 @@ fun Modifier.osTile(
         .clip(shape)
         .background(c.cardAlt)
         .border(0.7.dp, c.hairline, shape)
+}
+
+/**
+ * 液态玻璃材质（Liquid Glass）。
+ *
+ * 与 [osCard] 是明确分工的两种表面，不要互相替换：
+ * - `osCard` 承载密集数据，要的是**可读性**——实底 + 发丝描边，不透明；
+ * - `liquidGlass` 只给**悬浮在内容之上的导航类控件**用，要的是**透光层次**——
+ *   内容从下方滚过时能被隐约看见，控件因此「浮」起来而不是「贴」在页面上。
+ *
+ * 四层叠加模拟玻璃：
+ * 1. 半透明着色层（叠在 [Modifier.drawBackdrop] 的真实背景模糊之上）
+ * 2. 竖向顶光渐变：上缘亮、中部透明、下缘回一点反光，模拟光从上方掠过玻璃
+ * 3. 线性渐变描边：左上最亮 → 中部最暗 → 右下回升，形成一圈被光照到的「棱」
+ * 4. 大而软的投影，把玻璃从背景中托起
+ *
+ * 深色主题下白色高光的 alpha 大幅降低，否则玻璃会发白发灰、压不住底色。
+ */
+@Composable
+fun Modifier.liquidGlass(
+    shape: Shape = RoundedCornerShape(30.dp),
+    alpha: Float = 0.58f,
+    elevation: Dp = 18.dp,
+    borderAlpha: Float = 0.34f,
+): Modifier {
+    val c = osColors()
+    val sheenTop = if (c.isDark) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.60f)
+    val sheenBottom = if (c.isDark) Color.White.copy(alpha = 0.02f) else Color.White.copy(alpha = 0.08f)
+
+    return this
+        .shadow(elevation, shape, clip = false)
+        .clip(shape)
+        .background(c.card.copy(alpha = alpha))
+        .background(
+            Brush.verticalGradient(
+                0f to sheenTop,
+                0.5f to Color.Transparent,
+                1f to sheenBottom,
+            )
+        )
+        .border(
+            width = 0.8.dp,
+            brush = Brush.linearGradient(
+                listOf(
+                    Color.White.copy(alpha = (borderAlpha + 0.26f).coerceAtMost(1f)),
+                    Color.White.copy(alpha = borderAlpha * 0.25f),
+                    Color.White.copy(alpha = borderAlpha),
+                )
+            ),
+            shape = shape,
+        )
 }
 
 /**

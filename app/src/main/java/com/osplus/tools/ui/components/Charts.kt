@@ -179,91 +179,6 @@ fun RingChart(
 }
 
 /**
- * 圆角柱状图。
- *
- * 只保留一根基线，不画网格与轨道——参考图的图表语言靠柱体本身的高低对比表达，
- * 多余的装饰线会在小尺寸下变成噪声。
- *
- * @param values 由旧到新的数值，长度决定柱数
- */
-@Composable
-fun BarChart(
-    values: List<Float>,
-    maxValue: Float,
-    color: Color,
-    modifier: Modifier = Modifier,
-    height: Dp = 64.dp,
-    slots: Int = 5,
-    showLabels: Boolean = true,
-    barRatio: Float = 0.30f,
-    labelFormatter: (Float) -> String = { "%.0f".format(it) },
-) {
-    val c = osColors()
-    val safeMax = maxValue.coerceAtLeast(0.001f)
-    val data = remember(values, slots) {
-        if (values.size >= slots) values.takeLast(slots)
-        else List(slots - values.size) { 0f } + values
-    }
-    val animated = data.map { v ->
-        val f = (v / safeMax).coerceIn(0f, 1f)
-        val a by animateFloatAsState(f, tween(420), label = "bar")
-        a
-    }
-
-    val measurer = rememberTextMeasurer()
-    val labelStyle = TextStyle(color = c.textTertiary, fontSize = 9.sp, fontWeight = FontWeight.Medium)
-    val density = LocalDensity.current
-
-    Canvas(modifier = modifier.fillMaxWidth().height(height)) {
-        val slotW = size.width / slots
-        // 柱宽上限收窄：宽卡片上 5 根柱若按比例铺满会退化成圆角方块，
-        // 限制绝对宽度后柱体才有"细高"的柱状观感。
-        val barW = minOf(slotW * barRatio, with(density) { 12.dp.toPx() })
-        val minBarH = with(density) { 4.dp.toPx() }
-        val radius = CornerRadius(barW / 2f, barW / 2f)
-        val labelH = if (showLabels) with(density) { 14.dp.toPx() } else 0f
-        val chartTop = labelH
-        val chartBottom = size.height
-        val chartH = (chartBottom - chartTop).coerceAtLeast(1f)
-
-        // 基线
-        drawLine(
-            color = c.hairline,
-            start = Offset(0f, chartBottom - 0.5f),
-            end = Offset(size.width, chartBottom - 0.5f),
-            strokeWidth = 1f,
-        )
-
-        data.forEachIndexed { i, v ->
-            val left = slotW * i + (slotW - barW) / 2f
-            val centerX = left + barW / 2f
-            val f = animated.getOrElse(i) { 0f }
-            val h = (chartH * f).coerceAtLeast(minBarH)
-            val top = chartBottom - h
-
-            drawRoundRect(
-                brush = Brush.verticalGradient(
-                    colors = listOf(color, color.copy(alpha = 0.62f)),
-                    startY = top,
-                    endY = chartBottom,
-                ),
-                topLeft = Offset(left, top),
-                size = Size(barW, h),
-                cornerRadius = radius,
-            )
-
-            if (showLabels) {
-                val measured = measurer.measure(labelFormatter(v), labelStyle)
-                drawText(
-                    textLayoutResult = measured,
-                    topLeft = Offset(centerX - measured.size.width / 2f, 0f),
-                )
-            }
-        }
-    }
-}
-
-/**
  * 折线趋势图。
  *
  * 用于观察长窗口下的波动：柱状图在几十个采样点时只能看出高低，
@@ -354,7 +269,11 @@ fun LineChart(
 }
 
 /**
- * 指标卡片：标题 + 当前值 + 柱状图/折线图 + 时间轴。
+ * 指标卡片：标题 + 当前值 + 折线图 + 时间轴。
+ *
+ * 全站统一折线：柱状图在几十个采样点下只能看出高低，折线才能呈现起伏、
+ * 持续高位区间与回落过程。唯一保留柱状的是「每核一柱」的
+ * [CoreBarsChart] 与 [CoreFreqGrid]。
  */
 @Composable
 fun MetricChartCard(
@@ -367,12 +286,8 @@ fun MetricChartCard(
     subtitle: String? = null,
     valueFormatter: (Float) -> String = { "%.0f".format(it) },
     showAxis: Boolean = true,
-    /** 柱数：默认 60（长趋势窗口按此数量降采样后绘制） */
-    slots: Int = 60,
     /** 时间轴左端文案；调用方按实际窗口长度传入 [axisSpanLabel] 的结果 */
     axisStartLabel: String = "最早",
-    /** true 时改用折线趋势图（长窗口观察波动更直观） */
-    line: Boolean = false,
 ) {
     val c = osColors()
     val current = values.lastOrNull() ?: 0f
@@ -418,22 +333,12 @@ fun MetricChartCard(
             }
         }
         Spacer(Modifier.height(7.dp))
-        if (line) {
-            LineChart(
-                values = values,
-                maxValue = maxValue,
-                color = color,
-                valueFormatter = valueFormatter,
-            )
-        } else {
-            BarChart(
-                values = values,
-                maxValue = maxValue,
-                color = color,
-                slots = slots,
-                labelFormatter = valueFormatter,
-            )
-        }
+        LineChart(
+            values = values,
+            maxValue = maxValue,
+            color = color,
+            valueFormatter = valueFormatter,
+        )
         if (showAxis) {
             Spacer(Modifier.height(4.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

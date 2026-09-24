@@ -1,6 +1,8 @@
 package com.osplus.tools.ui.screen
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -9,12 +11,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -28,9 +36,12 @@ import com.osplus.tools.ui.components.ProgressRow
 import com.osplus.tools.ui.components.RingChart
 import com.osplus.tools.ui.components.SectionCard
 import com.osplus.tools.ui.components.StatTile
+import com.osplus.tools.ui.components.pressable
 import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
+import kotlinx.coroutines.delay
+import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 概览页可下钻的详情页 */
@@ -63,6 +74,15 @@ fun OverviewScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
     val coreIndexes by vm.coreIndexes.collectAsStateWithLifecycle()
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
     val c = osColors()
+    val memClean by vm.memCleanState.collectAsStateWithLifecycle()
+
+    // 清理结果只做一次回执，4 秒后自动收起，避免长期占据卡片
+    LaunchedEffect(memClean) {
+        if (memClean != null) {
+            delay(4000)
+            vm.clearMemCleanState()
+        }
+    }
 
     val samples: List<MetricSample> = history
     val latest = samples.lastOrNull()
@@ -106,6 +126,12 @@ fun OverviewScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                             value = "${fmtGb(mem.usedKb)} / ${fmtGb(mem.totalKb)}",
                             fraction = memPercent / 100f,
                             color = ChartColors.mem,
+                            trailing = {
+                                CleanButton(
+                                    contentDescription = "清理物理内存",
+                                    onClick = { vm.cleanMemCaches() },
+                                )
+                            },
                         )
                         Spacer(Modifier.height(12.dp))
                         ProgressRow(
@@ -115,6 +141,12 @@ fun OverviewScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                             } else "未启用",
                             fraction = swapPercent / 100f,
                             color = c.primary,
+                            trailing = {
+                                CleanButton(
+                                    contentDescription = "清理交换分区",
+                                    onClick = { vm.cleanSwap() },
+                                )
+                            },
                         )
                     }
                 }
@@ -138,6 +170,18 @@ fun OverviewScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                         color = c.textTertiary,
                     )
                 }
+                memClean?.let { r ->
+                    Spacer(Modifier.height(10.dp))
+                    NoticeBanner(
+                        text = if (r.ok) {
+                            "已清理${r.target}" +
+                                if (r.freedKb > 0) "，释放 ${fmtGb(r.freedKb)}" else ""
+                        } else {
+                            "清理${r.target}未成功：${r.detail.ifBlank { "需要 Root 权限" }}"
+                        },
+                        accent = if (r.ok) ChartColors.gpu else ChartColors.power,
+                    )
+                }
             }
         }
 
@@ -146,9 +190,16 @@ fun OverviewScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
             SectionCard(onClick = { onOpen(OverviewDetail.Gpu) }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     RingChart(
-                        progress = gpuFreqUtil,
+                        // 环的填充与中心数值都表达 GPU 负载；负载不可读时退回频率水位
+                        progress = if (gpu.loadPercent >= 0) {
+                            gpu.loadPercent / 100f
+                        } else {
+                            gpuFreqUtil
+                        },
                         color = ChartColors.gpu,
                         label = "GPU",
+                        value = if (gpu.loadPercent >= 0) "${gpu.loadPercent}" else "-",
+                        unit = "%",
                         size = 92.dp,
                         stroke = 13.dp,
                     )
@@ -171,7 +222,7 @@ fun OverviewScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                         }
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            text = if (gpu.loadPercent >= 0) "负载 ${gpu.loadPercent}%" else "负载不可读",
+                            text = "当前频率",
                             style = OsText.caption,
                             color = c.textSecondary,
                         )
@@ -404,4 +455,33 @@ internal fun fmtGb(kb: Long): String {
 internal fun gb(percent: Float, totalKb: Long): String {
     if (totalKb <= 0L) return "-"
     return fmtGb((totalKb * percent / 100f).toLong())
+}
+
+/**
+ * 进度条右侧的圆形清理按钮。
+ *
+ * 做成小尺寸圆形而非文字按钮：它挂在某一行的数值后面，
+ * 文字按钮会把「物理内存 / 交换分区」两行的行宽顶开、破坏对齐。
+ */
+@Composable
+private fun CleanButton(
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    val c = osColors()
+    Box(
+        modifier = Modifier
+            .size(24.dp)
+            .clip(CircleShape)
+            .background(c.cardAlt)
+            .pressable(onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.CleaningServices,
+            contentDescription = contentDescription,
+            tint = c.textSecondary,
+            modifier = Modifier.size(14.dp),
+        )
+    }
 }

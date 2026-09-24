@@ -25,13 +25,24 @@ object FpsRecorder {
         private set
 
     /**
-     * 是否由应用内的「帧率记录」持有。
+     * 悬浮窗服务是否持有统计器。
      *
-     * 悬浮窗服务与录制功能共用同一个 Choreographer 实例：
-     * 服务销毁时只有在应用未录制的情况下才停止统计，避免互相干扰。
+     * 悬浮窗与录制功能共用同一个 Choreographer 实例：结束录制时若悬浮窗仍在运行，
+     * 必须保留统计器（否则悬浮窗上的数字会冻结）；服务销毁时若仍在录制，
+     * 同样不能停。两边各自置位，由这里的标志位仲裁。
      */
     @Volatile
-    var appRetained: Boolean = false
+    var overlayHolds: Boolean = false
+
+    /**
+     * 是否处于记录会话中。
+     *
+     * 放在这个单例里而不是 ViewModel 中：记录可以由应用内开关发起，
+     * 也可以由桌面悬浮窗轻点发起，而悬浮窗在应用退到后台后仍然存在，
+     * 两处必须看到同一个状态。
+     */
+    private val _recording = MutableStateFlow(false)
+    val recording: StateFlow<Boolean> = _recording.asStateFlow()
 
     private val handler = Handler(Looper.getMainLooper())
     private var choreographer: Choreographer? = null
@@ -107,6 +118,34 @@ object FpsRecorder {
             maxFrameMs = 0f
             _sample.value = FpsSample()
         }
+    }
+
+    /**
+     * 开始一次记录会话：清零统计窗口并确保逐帧回调在跑。
+     *
+     * 可由应用内开关或悬浮窗轻点调用，二者共享同一个状态。
+     */
+    fun startRecording() {
+        reset()
+        start()
+        _recording.value = true
+    }
+
+    /**
+     * 结束记录会话。
+     *
+     * 悬浮窗仍在运行时保留统计器——它还要靠逐帧回调刷新窗上的实时数字；
+     * 否则帧率、CPU、GPU 三个数值会停在被冻结的最后一帧。
+     */
+    fun stopRecording() {
+        _recording.value = false
+        if (!overlayHolds) stop()
+    }
+
+    /** 切换记录会话，返回切换后的状态 */
+    fun toggleRecording(): Boolean {
+        if (_recording.value) stopRecording() else startRecording()
+        return _recording.value
     }
 
     fun stop() {

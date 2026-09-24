@@ -24,6 +24,7 @@ import com.osplus.tools.core.FpsRecorder
 import com.osplus.tools.core.GpuDataSource
 import com.osplus.tools.core.LiveMetrics
 import com.osplus.tools.core.MemDataSource
+import com.osplus.tools.core.MemCleanResult
 import com.osplus.tools.core.PowerStatsDataSource
 import com.osplus.tools.core.Preferences
 import com.osplus.tools.core.ProcessDataSource
@@ -287,7 +288,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         _history.value = (_history.value + sample).takeLast(HISTORY_MAX_SAMPLES)
 
         // 帧率记录：同时留档同期系统指标，便于事后定位卡顿成因
-        if (_fpsRecording.value) {
+        if (FpsRecorder.recording.value) {
             val record = FpsRecord(
                 timeMs = now,
                 fps = fpsState.fps,
@@ -440,10 +441,42 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------------- 内存清理 ----------------
+
+    /** 最近一次内存清理的结果；界面展示后调用 [clearMemCleanState] 收起 */
+    private val _memCleanState = MutableStateFlow<MemCleanResult?>(null)
+    val memCleanState: StateFlow<MemCleanResult?> = _memCleanState.asStateFlow()
+
+    fun clearMemCleanState() {
+        _memCleanState.value = null
+    }
+
+    /** 释放物理内存中的可回收缓存（需要 root） */
+    fun cleanMemCaches() {
+        viewModelScope.launch {
+            _memCleanState.value = withContext(Dispatchers.IO) { MemDataSource.dropCaches() }
+            fullSnapshot()
+        }
+    }
+
+    /** 重建交换分区以清空已用交换（需要 root） */
+    fun cleanSwap() {
+        viewModelScope.launch {
+            _memCleanState.value = withContext(Dispatchers.IO) { MemDataSource.dropSwap() }
+            fullSnapshot()
+        }
+    }
+
     // ---------------- 帧率记录会话 ----------------
 
-    private val _fpsRecording = MutableStateFlow(false)
-    val fpsRecording: StateFlow<Boolean> = _fpsRecording.asStateFlow()
+    /**
+     * 记录会话状态。
+     *
+     * 直接复用 [FpsRecorder] 的单例状态，而不是在 ViewModel 里另存一份：
+     * 桌面悬浮窗轻点也能开始/停止记录，两处必须是同一个真值，
+     * 否则「悬浮窗开了记录、页面开关却显示关闭」。
+     */
+    val fpsRecording: StateFlow<Boolean> = FpsRecorder.recording
 
     private val _fpsRecords = MutableStateFlow<List<FpsRecord>>(emptyList())
     val fpsRecords: StateFlow<List<FpsRecord>> = _fpsRecords.asStateFlow()
@@ -464,16 +497,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startFpsRecording() {
-        FpsRecorder.appRetained = true
-        FpsRecorder.reset()
-        FpsRecorder.start()
-        _fpsRecording.value = true
+        FpsRecorder.startRecording()
     }
 
     fun stopFpsRecording() {
-        _fpsRecording.value = false
-        FpsRecorder.appRetained = false
-        FpsRecorder.stop()
+        FpsRecorder.stopRecording()
     }
 
     fun clearFpsRecords() {

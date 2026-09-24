@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.ChargeController
+import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.MetricChartCard
@@ -195,7 +196,7 @@ private fun ChargeStatsTab(vm: DeviceViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            SectionCard(title = "功耗 · 已累积 $trendSpan") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "整机功耗",
@@ -203,7 +204,6 @@ private fun ChargeStatsTab(vm: DeviceViewModel) {
                         maxValue = autoMax(history.map { it.powerMw }, 0f, 500f),
                         color = ChartColors.power,
                         unit = "mW",
-                        slots = trendSlots,
                         axisStartLabel = trendAxis,
                     )
                     Spacer(Modifier.height(10.dp))
@@ -214,14 +214,13 @@ private fun ChargeStatsTab(vm: DeviceViewModel) {
                         color = ChartColors.temp,
                         unit = "℃",
                         valueFormatter = { "%.1f".format(it) },
-                        slots = trendSlots,
                         axisStartLabel = trendAxis,
                     )
                 }
             }
         }
         item {
-            SectionCard(title = "电池信息") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("电量", "${battery.levelPercent}%", emphasis = true)
                     InfoRow("状态", battery.status)
@@ -265,7 +264,7 @@ private fun ChargeControlTab(vm: DeviceViewModel) {
             item { NoticeBanner("充电控制需要 Root 权限；未授权时仅可查看状态。") }
         }
         item {
-            SectionCard(title = "充电开关") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     SwitchRow(
                         label = "允许充电",
@@ -284,8 +283,10 @@ private fun ChargeControlTab(vm: DeviceViewModel) {
             }
         }
         item {
-            SectionCard(title = "充电电流上限") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 5.dp)) {
+                    CardSectionLabel("充电电流上限")
+                    Spacer(Modifier.height(8.dp))
                     Text(
                         text = "%.0f mA".format(currentLimit),
                         style = MiuixTheme.textStyles.title4,
@@ -311,8 +312,10 @@ private fun ChargeControlTab(vm: DeviceViewModel) {
             }
         }
         item {
-            SectionCard(title = "内核节点探测") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("内核节点探测")
+                    Spacer(Modifier.height(8.dp))
                     if (nodes.isEmpty()) {
                         Text(
                             text = "未检测到可用充电控制节点",

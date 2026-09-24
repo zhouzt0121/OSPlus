@@ -129,4 +129,68 @@ object MemDataSource {
             value to applied
         }
 
+    /**
+     * 释放物理内存中的可回收缓存。
+     *
+     * `drop_caches` 只丢弃干净的页缓存 / 目录项 / inode 缓存，不触碰进程私有内存，
+     * 因此不会导致后台应用被杀。释放量用 Cached 的差值衡量：`MemAvailable` 本身
+     * 已把可回收缓存计为可用，拿它做差值几乎恒为 0，看不出效果。
+     */
+    suspend fun dropCaches(): MemCleanResult = withContext(Dispatchers.IO) {
+        val before = read()
+        val r = Shell.run("sync; echo 3 > /proc/sys/vm/drop_caches", root = true)
+        val after = read()
+        MemCleanResult(
+            target = "物理内存",
+            ok = r.success,
+            freedKb = (before.cachedKb - after.cachedKb).coerceAtLeast(0L),
+            detail = if (r.success) "" else r.stderr.ifBlank { r.stdout },
+        )
+    }
+
+    /**
+     * 重建交换分区以清空已用交换。
+     *
+     * 先关闭再重新启用每一个处于活动状态的交换设备（Android 上通常是 zram），
+     * 使已换出的页回到物理内存、zram 占用归零。
+     */
+    suspend fun dropSwap(): MemCleanResult = withContext(Dispatchers.IO) {
+        val before = read()
+        val devices = Shell.run("cat /proc/swaps", root = true)
+            .stdout.lines()
+            .drop(1)
+            .mapNotNull { it.trim().split(Regex("\\s+")).firstOrNull() }
+            .filter { it.isNotEmpty() && it != "Filename" }
+        if (devices.isEmpty()) {
+            return@withContext MemCleanResult(
+                target = "交换分区",
+                ok = false,
+                freedKb = 0L,
+                detail = "未检测到活动的交换设备",
+            )
+        }
+        val cmd = devices.joinToString("; ") {
+            "swapoff $it 2>/dev/null; swapon $it 2>/dev/null"
+        }
+        val r = Shell.run(cmd, root = true)
+        val after = read()
+        MemCleanResult(
+            target = "交换分区",
+            ok = r.success,
+            freedKb = (before.swapUsedKb - after.swapUsedKb).coerceAtLeast(0L),
+            detail = if (r.success) "" else r.stderr.ifBlank { r.stdout },
+        )
+    }
+
 }
+
+/** 一次内存清理操作的结果，用于界面回执 */
+data class MemCleanResult(
+    /** 清理对象，如「物理内存」 */
+    val target: String,
+    val ok: Boolean,
+    /** 实际释放量（KB）；无法量化时为 0 */
+    val freedKb: Long,
+    /** 失败原因，成功时为空串 */
+    val detail: String,
+)

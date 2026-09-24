@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.CpuDataSource
 import com.osplus.tools.core.GpuDataSource
+import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.ChoiceChip
 import com.osplus.tools.ui.components.CoreBarsChart
@@ -84,7 +85,7 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            SectionCard(title = "CPU 负载 · 已累积 $trendSpan") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "总占用",
@@ -92,7 +93,6 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
                         maxValue = 100f,
                         color = ChartColors.cpu,
                         unit = "%",
-                        slots = trendSlots,
                         axisStartLabel = trendAxis,
                     )
                     Spacer(Modifier.height(10.dp))
@@ -106,7 +106,7 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "核心簇频率") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     if (cpu.clusters.isEmpty()) {
                         Text(
@@ -144,8 +144,10 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "调速器（Governor）") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 5.dp)) {
+                    CardSectionLabel("CPU 调速器（Governor）")
+                    Spacer(Modifier.height(10.dp))
                     if (!rootAvailable) {
                         NoticeBanner("修改调速器需要 Root 权限")
                         Spacer(Modifier.height(8.dp))
@@ -181,7 +183,7 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "核心频率控制") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 5.dp)) {
                     Text(
                         text = "选择要调节的核心",
@@ -352,7 +354,7 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            SectionCard(title = "GPU · 已累积 $trendSpan") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "频率",
@@ -363,7 +365,6 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
                         maxValue = autoMax(history.map { it.gpuMhz.toFloat() }, gpu.maxMhz.toFloat(), 800f),
                         color = ChartColors.gpu,
                         unit = "MHz",
-                        slots = trendSlots,
                         axisStartLabel = trendAxis,
                     )
                     Spacer(Modifier.height(10.dp))
@@ -376,7 +377,6 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
                         maxValue = 100f,
                         color = ChartColors.cpu,
                         unit = "%",
-                        slots = trendSlots,
                         axisStartLabel = trendAxis,
                     )
                 }
@@ -384,7 +384,7 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "GPU 详情") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("型号", gpu.name.ifBlank { "-" })
                     InfoRow("当前频率", gpuFreq(gpu.curMhz), emphasis = true)
@@ -402,8 +402,10 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "GPU 调速器") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 5.dp)) {
+                    CardSectionLabel("GPU 调速器")
+                    Spacer(Modifier.height(10.dp))
                     if (!rootAvailable) {
                         NoticeBanner("修改 GPU 调速器需要 Root 权限")
                         Spacer(Modifier.height(8.dp))
@@ -454,8 +456,10 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "GPU 频率上限") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 5.dp)) {
+                    CardSectionLabel("GPU 频率上限")
+                    Spacer(Modifier.height(10.dp))
                     if (!rootAvailable) {
                         NoticeBanner("修改 GPU 频率需要 Root 权限")
                         Spacer(Modifier.height(8.dp))
@@ -528,7 +532,7 @@ fun MemDetailScreen(vm: DeviceViewModel) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
-            SectionCard(title = "内存 · 已累积 $trendSpan") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "占用率",
@@ -536,7 +540,6 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                         maxValue = 100f,
                         color = ChartColors.mem,
                         unit = "%",
-                        slots = trendSlots,
                         axisStartLabel = trendAxis,
                     )
                     Spacer(Modifier.height(10.dp))
@@ -547,7 +550,6 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                         color = ChartColors.gpu,
                         unit = "%",
                         subtitle = "${fmtGb(mem.swapUsedKb)} / ${fmtGb(mem.swapTotalKb)}",
-                        slots = trendSlots,
                         axisStartLabel = trendAxis,
                     )
                 }
@@ -555,7 +557,7 @@ fun MemDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "内存明细") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("总容量", fmtGb(mem.totalKb), emphasis = true)
                     InfoRow("已用", "${fmtGb(mem.usedKb)}（${percent(mem.usedKb, mem.totalKb)}）")
@@ -568,8 +570,10 @@ fun MemDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "ZRAM 容量调整") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 5.dp)) {
+                    CardSectionLabel("ZRAM 容量调整")
+                    Spacer(Modifier.height(10.dp))
                     NoticeBanner(
                         text = "调整会重建 zram 交换分区，可能导致正在使用交换区的应用短暂卡顿，请谨慎操作。",
                     )
@@ -601,7 +605,7 @@ fun MemDetailScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "SWAP / ZRAM") {
+            SectionCard() {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("SWAP 总量", fmtGb(mem.swapTotalKb))
                     InfoRow("SWAP 已用", "${fmtGb(mem.swapUsedKb)}（${"%.0f".format(swapPercent)}%）")

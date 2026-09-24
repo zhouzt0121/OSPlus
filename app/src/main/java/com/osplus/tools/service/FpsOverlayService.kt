@@ -2,6 +2,7 @@ package com.osplus.tools.service
 
 import android.annotation.SuppressLint
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
@@ -11,9 +12,14 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
+import android.text.Spannable
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -74,22 +80,18 @@ class FpsOverlayService : Service() {
         addOverlay()
 
         // 与录制功能共用同一个逐帧统计器，避免两套 Choreographer 互相干扰
+        FpsRecorder.overlayHolds = true
         FpsRecorder.start()
         scope.launch {
-            // 只显示三个数值：帧率 / CPU 占用 / GPU 占用
+            // 只显示三个数值：帧率 / CPU 占用 / GPU 占用；记录中在前面加一个红点
             combine(
                 FpsRecorder.sample,
                 LiveMetrics.cpuLoad,
                 LiveMetrics.gpuLoad,
-            ) { fps, cpu, gpu -> Triple(fps.fps, cpu, gpu) }
-                .collectLatest { (fps, cpu, gpu) ->
-                    overlayView?.text = buildString {
-                        append("%.0f".format(fps))
-                        append("   ")
-                        append("%.0f%%".format(cpu))
-                        append("   ")
-                        append(if (gpu >= 0) "$gpu%" else "--")
-                    }
+                FpsRecorder.recording,
+            ) { fps, cpu, gpu, recording -> OverlayValues(fps.fps, cpu, gpu, recording) }
+                .collectLatest { v ->
+                    overlayView?.text = buildOverlayText(v)
                 }
         }
         // 界面调整不透明度后立即作用到窗口，无需重启服务
@@ -140,36 +142,51 @@ class FpsOverlayService : Service() {
             y = Preferences.overlayY(this@FpsOverlayService)
             alpha = userAlpha
         }
-        attachDragHandler(view, params)
+        attachTouchHandler(view, params)
         runCatching { windowManager.addView(view, params) }
         overlayView = view
         layoutParams = params
     }
 
     /**
-     * 拖动悬浮窗。
+     * 悬浮窗手势：**轻点切换记录，长按或拖动移动位置**。
+     *
+     * 两种意图靠「按住时长」和「位移」区分：
+     * - 位移超过 [DRAG_SLOP] → 立即进入拖动（快速拖不会误判成轻点）；
+     * - 按住超过 [LONG_PRESS_MS] → 也进入拖动（长按即准备移动，避免长按被当成点击）；
+     * - 抬起时两者都不满足且按压时长很短 → 视为轻点，切换记录状态。
      *
      * 用 rawX/rawY 的位移增量直接累加到窗口偏移上，不依赖控件自身的布局坐标，
      * 因此不会出现「手指跟窗口错位」的问题；松手时把落点写回偏好。
      */
-    private fun attachDragHandler(view: View, params: WindowManager.LayoutParams) {
+    @SuppressLint("ClickableViewAccessibility")
+    private fun attachTouchHandler(view: View, params: WindowManager.LayoutParams) {
         var downRawX = 0f
         var downRawY = 0f
+        var downTime = 0L
         var startX = 0
         var startY = 0
         var dragging = false
+
+        // 长按进入拖动模式：给一点触感反馈，让用户知道现在可以挪了
+        val longPress = Runnable {
+            dragging = true
+            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        }
 
         view.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = event.rawX
                     downRawY = event.rawY
+                    downTime = SystemClock.uptimeMillis()
                     startX = params.x
                     startY = params.y
                     dragging = false
                     // 拖动过程中保证看得清
                     params.alpha = 1f
                     runCatching { windowManager.updateViewLayout(view, params) }
+                    view.postDelayed(longPress, LONG_PRESS_MS)
                     true
                 }
 
@@ -177,6 +194,7 @@ class FpsOverlayService : Service() {
                     val dx = event.rawX - downRawX
                     val dy = event.rawY - downRawY
                     if (!dragging && (kotlin.math.abs(dx) > DRAG_SLOP || kotlin.math.abs(dy) > DRAG_SLOP)) {
+                        view.removeCallbacks(longPress)
                         dragging = true
                     }
                     if (dragging) {
@@ -187,12 +205,25 @@ class FpsOverlayService : Service() {
                     true
                 }
 
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_UP -> {
+                    view.removeCallbacks(longPress)
                     params.alpha = userAlpha
                     runCatching { windowManager.updateViewLayout(view, params) }
                     if (dragging) {
                         Preferences.setOverlayPosition(this, params.x, params.y)
+                    } else if (SystemClock.uptimeMillis() - downTime < LONG_PRESS_MS) {
+                        // 轻点：开始 / 停止记录，并同步通知文案
+                        FpsRecorder.toggleRecording()
+                        updateNotification()
                     }
+                    dragging = false
+                    true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    view.removeCallbacks(longPress)
+                    params.alpha = userAlpha
+                    runCatching { windowManager.updateViewLayout(view, params) }
                     dragging = false
                     true
                 }
@@ -201,6 +232,33 @@ class FpsOverlayService : Service() {
             }
         }
     }
+
+    /** 窗上文字：记录中在数值前加一个红点，表示正在留档 */
+    private fun buildOverlayText(v: OverlayValues): CharSequence {
+        val body = "%.0f   %.0f%%   %s".format(
+            v.fps,
+            v.cpu,
+            if (v.gpu >= 0) "${v.gpu}%" else "--",
+        )
+        if (!v.recording) return body
+        val sb = SpannableStringBuilder()
+        sb.append("● ")
+        sb.setSpan(
+            ForegroundColorSpan(RECORDING_DOT_COLOR),
+            0,
+            1,
+            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE,
+        )
+        sb.append(body)
+        return sb
+    }
+
+    private data class OverlayValues(
+        val fps: Float,
+        val cpu: Float,
+        val gpu: Int,
+        val recording: Boolean,
+    )
 
     /** 限制在屏幕内，避免被拖出可视区域后找不回来 */
     private fun clampX(x: Int, view: View): Int {
@@ -220,13 +278,26 @@ class FpsOverlayService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
+        val recording = FpsRecorder.recording.value
         return NotificationCompat.Builder(this, OsPlusApplication.CHANNEL_FPS)
-            .setContentTitle("OSPlus 帧率监视")
-            .setContentText("正在显示实时帧率，可拖动调整位置")
+            .setContentTitle(if (recording) "OSPlus 正在记录帧率" else "OSPlus 帧率监视")
+            .setContentText(
+                if (recording) {
+                    "轻点悬浮窗停止记录，长按拖动位置"
+                } else {
+                    "轻点悬浮窗开始记录，长按拖动位置"
+                },
+            )
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(intent)
             .build()
+    }
+
+    /** 记录状态变化后刷新通知文案 */
+    private fun updateNotification() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        runCatching { nm.notify(NOTIFICATION_ID, buildNotification()) }
     }
 
     override fun onDestroy() {
@@ -235,8 +306,9 @@ class FpsOverlayService : Service() {
         overlayView?.let { v -> runCatching { windowManager.removeView(v) } }
         overlayView = null
         layoutParams = null
-        // 应用内正在录制时不要停掉统计器，否则录制会被中断
-        if (!FpsRecorder.appRetained) FpsRecorder.stop()
+        // 仍在记录时不要停掉统计器，否则记录会被中断
+        FpsRecorder.overlayHolds = false
+        if (!FpsRecorder.recording.value) FpsRecorder.stop()
         super.onDestroy()
     }
 
@@ -245,6 +317,12 @@ class FpsOverlayService : Service() {
 
         /** 判定为「拖动」而非「点击」的位移阈值（像素） */
         private const val DRAG_SLOP = 8f
+
+        /** 按住超过该时长即进入拖动模式，避免长按被误判成轻点 */
+        private const val LONG_PRESS_MS = 320L
+
+        /** 记录中的红点颜色 */
+        private val RECORDING_DOT_COLOR = Color.parseColor("#FF5252")
 
         fun start(context: Context) {
             val intent = Intent(context, FpsOverlayService::class.java)

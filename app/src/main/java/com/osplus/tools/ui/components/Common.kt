@@ -120,6 +120,22 @@ fun SectionCard(
     }
 }
 
+/**
+ * 卡片内的分组小标签。
+ *
+ * 二级详情页去掉了卡片外部的小节标题后，纯控制型卡片（调速器、频率上限、充电控制等）
+ * 只剩下一排胶囊和滑块，看不出这组控件是干什么的。这里在卡片内部补一行小字说明，
+ * 它比原来的外部标题更轻——不额外占一行卡片外空间，视觉上仍是「一张卡一个整体」。
+ */
+@Composable
+fun CardSectionLabel(text: String) {
+    Text(
+        text = text,
+        style = OsText.value,
+        color = osColors().textPrimary,
+    )
+}
+
 /** 左标签右数值的信息行 */
 @Composable
 fun InfoRow(
@@ -156,6 +172,8 @@ fun InfoRow(
 /**
  * 进度行：标签 + 数值 + 圆角进度条。
  * 对应参考图中「物理内存 / 交换分区」那一类的行式用量展示。
+ *
+ * [trailing] 用于在数值右侧挂一个操作按钮（如内存行的「清理」）。
  */
 @Composable
 fun ProgressRow(
@@ -165,6 +183,7 @@ fun ProgressRow(
     color: Color,
     modifier: Modifier = Modifier,
     barHeight: Dp = 7.dp,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     val c = osColors()
     Column(modifier.fillMaxWidth()) {
@@ -184,6 +203,10 @@ fun ProgressRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (trailing != null) {
+                Spacer(Modifier.width(7.dp))
+                trailing()
+            }
         }
         Spacer(Modifier.height(6.dp))
         UsageBar(fraction = fraction, color = color, barHeight = barHeight)

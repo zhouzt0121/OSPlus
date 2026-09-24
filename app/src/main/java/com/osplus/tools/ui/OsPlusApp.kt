@@ -6,21 +6,17 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ShowChart
 import androidx.compose.material.icons.rounded.Dashboard
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.ShowChart
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -31,11 +27,9 @@ import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
 import com.osplus.tools.ui.components.BarItem
-import com.osplus.tools.ui.components.OsActionButton
+import com.osplus.tools.ui.components.OsFloatingBackButton
 import com.osplus.tools.ui.components.OsFloatingBottomBar
-import com.osplus.tools.ui.components.OsTopBar
 import com.osplus.tools.ui.components.PageBackground
-import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.ui.screen.CpuDetailScreen
 import com.osplus.tools.ui.screen.FpsScreen
 import com.osplus.tools.ui.screen.GpuDetailScreen
@@ -46,75 +40,39 @@ import com.osplus.tools.ui.screen.PowerDetailScreen
 import com.osplus.tools.ui.screen.ProcessDetailScreen
 import com.osplus.tools.ui.screen.RealtimeScreen
 import com.osplus.tools.ui.screen.SettingsScreen
-import com.osplus.tools.ui.screen.fmtGb
 import com.osplus.tools.ui.theme.OSPlusTheme
 import com.osplus.tools.vm.DeviceViewModel
+import top.yukonga.miuix.kmp.blur.layerBackdrop
+import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 
 /** 底部悬浮导航的一级页面 */
-private enum class RootTab(val title: String) {
-    Overview("概览"),
-    Realtime("实时"),
-    Fps("帧率"),
-    Settings("设置"),
+private enum class RootTab {
+    Overview,
+    Realtime,
+    Fps,
+    Settings,
 }
 
 /**
  * 应用根布局。
  *
  * 结构：唯一主页「概览」+ 底部悬浮导航（概览 / 实时 / 帧率 / 设置）
- * + 从概览卡片下钻的二级详情页（内存 / GPU / CPU / 进程 / 电源）。
- * 二级页顶部带返回箭头；返回手势优先退二级页，其次回概览，最后交还系统退出。
+ * + 从概览 / 实时卡片下钻的二级详情页（内存 / GPU / CPU / 进程 / 电源）。
+ *
+ * 顶部标题栏已移除：页面身份由底部导航的高亮图标承担，实时摘要交给各页卡片自身，
+ * 二级页则在左上角保留一个悬浮返回按钮。
+ * 返回手势优先退二级页，其次回概览，最后交还系统执行退出动画。
  */
 @Composable
 fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val monet by viewModel.monet.collectAsStateWithLifecycle()
-    val autoRefresh by viewModel.autoRefresh.collectAsStateWithLifecycle()
 
     OSPlusTheme(mode = themeMode, monet = monet) {
         var rootTab by rememberSaveable { mutableIntStateOf(0) }
         var detailName by rememberSaveable { mutableStateOf<String?>(null) }
         val detail = detailName?.let { name ->
             OverviewDetail.entries.firstOrNull { it.name == name }
-        }
-
-        val history by viewModel.history.collectAsStateWithLifecycle()
-        val cpu by viewModel.cpu.collectAsStateWithLifecycle()
-        val gpu by viewModel.gpu.collectAsStateWithLifecycle()
-        val mem by viewModel.mem.collectAsStateWithLifecycle()
-        val processes by viewModel.processes.collectAsStateWithLifecycle()
-
-        val current = RootTab.entries[rootTab]
-        val title = detail?.let {
-            when (it) {
-                OverviewDetail.Memory -> "内存详情"
-                OverviewDetail.Gpu -> "GPU 详情"
-                OverviewDetail.Cpu -> "CPU 详情"
-                OverviewDetail.Process -> "进程详情"
-                OverviewDetail.Power -> "电源详情"
-            }
-        } ?: current.title
-
-        val subtitle = remember(detail, current, history, cpu, gpu, mem, processes) {
-            when (detail) {
-                OverviewDetail.Memory -> "已用 ${fmtGb(mem.usedKb)} / 共 ${fmtGb(mem.totalKb)}"
-                OverviewDetail.Gpu -> gpu.name.ifBlank { "读取中…" }
-                OverviewDetail.Cpu -> cpu.soc.ifBlank { "读取中…" }
-                OverviewDetail.Process -> "共 ${processes.size} 个进程"
-                OverviewDetail.Power -> "耗电统计 · 充电控制"
-                null -> when (current) {
-                    RootTab.Overview ->
-                        if (history.isEmpty()) "正在采样…"
-                        else "CPU ${"%.0f".format(history.last().cpuLoad)}% · 内存 ${
-                            "%.0f".format(history.last().memUsedPercent)
-                        }% · ${"%.0f".format(history.last().powerMw)} mW"
-                    RootTab.Realtime ->
-                        if (history.isEmpty()) "正在采样…"
-                        else "已累积 ${spanText(history.size)} · 每秒 1 次采样"
-                    RootTab.Fps -> "帧率记录与跨应用悬浮窗"
-                    RootTab.Settings -> "OSPlus 1.1.0"
-                }
-            }
         }
 
         // 预测性返回：优先退二级详情页 → 其次回概览 → 已在概览则交还系统执行退出动画
@@ -129,25 +87,22 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
 
         val screenKey = detail?.name ?: "root-$rootTab"
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            PageBackground()
-            Column(modifier = Modifier.fillMaxSize()) {
-                OsTopBar(
-                    title = title,
-                    subtitle = subtitle,
-                    onBack = if (detail != null) ({ detailName = null }) else null,
-                ) {
-                    OsActionButton(
-                        icon = if (autoRefresh) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                        contentDescription = if (autoRefresh) "暂停采样" else "继续采样",
-                        onClick = { viewModel.setAutoRefresh(!autoRefresh) },
-                    )
-                }
+        // 内容层先渲染进 GraphicsLayer 并记录下来，底部导航据此做真实背景模糊（液态玻璃）。
+        // 记录的是「背景 + 页面内容」整层，不含导航条自身——否则导航条会把自己的高光也糊进去。
+        val backdrop = rememberLayerBackdrop()
 
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .layerBackdrop(backdrop),
+            ) {
+                PageBackground()
+                // 无顶栏后内容直接顶到状态栏下方；背景仍铺满整屏（含状态栏区域）
                 Box(
                     Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
+                        .fillMaxSize()
+                        .statusBarsPadding(),
                 ) {
                     AnimatedContent(
                         targetState = screenKey,
@@ -178,11 +133,19 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                 }
             }
 
+            // 二级详情页的唯一可见返回入口（顶栏已移除）
+            if (detail != null) {
+                OsFloatingBackButton(
+                    onClick = { detailName = null },
+                    modifier = Modifier.align(Alignment.TopStart),
+                )
+            }
+
             OsFloatingBottomBar(
                 items = listOf(
                     BarItem("概览", Icons.Rounded.Dashboard),
-                    BarItem("实时", Icons.Rounded.ShowChart),
-                    BarItem("帧率", Icons.Rounded.Speed),
+                    BarItem("实时", Icons.Rounded.Speed),
+                    BarItem("帧率", Icons.AutoMirrored.Rounded.ShowChart),
                     BarItem("设置", Icons.Rounded.Settings),
                 ),
                 selectedIndex = rootTab,
@@ -190,6 +153,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                     rootTab = it
                     detailName = null
                 },
+                backdrop = backdrop,
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }

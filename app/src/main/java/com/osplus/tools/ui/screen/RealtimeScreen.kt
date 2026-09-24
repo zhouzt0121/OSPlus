@@ -36,6 +36,7 @@ import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
 import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
+import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
@@ -128,15 +129,24 @@ fun RealtimeScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
 
         item {
             SectionCard {
+                // 顶栏移除后，采样跨度改由卡片自身说明
+                Text(
+                    text = if (samples.isEmpty()) {
+                        "正在采样…"
+                    } else {
+                        "已累积 ${spanText(spanSeconds)} · 每秒 1 次采样"
+                    },
+                    style = OsText.micro,
+                    color = c.textTertiary,
+                )
+                Spacer(Modifier.height(10.dp))
                 MetricChartCard(
                     title = "CPU 总占用",
                     values = downsample(samples.map { it.cpuLoad }, slots),
                     maxValue = 100f,
                     color = ChartColors.cpu,
                     unit = "%",
-                    slots = slots,
                     axisStartLabel = axisStart,
-                    line = true,
                 )
                 Hairline(verticalPadding = 12.dp)
                 MetricChartCard(
@@ -146,9 +156,7 @@ fun RealtimeScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                     color = ChartColors.mem,
                     unit = "%",
                     subtitle = latest?.let { "已用 ${gb(it.memUsedPercent, mem.totalKb)} / 共 ${fmtGb(mem.totalKb)}" },
-                    slots = slots,
                     axisStartLabel = axisStart,
-                    line = true,
                 )
                 Hairline(verticalPadding = 12.dp)
                 MetricChartCard(
@@ -163,9 +171,7 @@ fun RealtimeScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                     subtitle = latest?.let {
                         if (it.gpuLoad >= 0) "负载 ${it.gpuLoad}%" else "负载不可读"
                     },
-                    slots = slots,
                     axisStartLabel = axisStart,
-                    line = true,
                 )
                 Hairline(verticalPadding = 12.dp)
                 MetricChartCard(
@@ -175,9 +181,7 @@ fun RealtimeScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                     color = ChartColors.power,
                     unit = "mW",
                     subtitle = latest?.let { "≈ ${"%.2f".format(it.powerMw / 1000f)} W" },
-                    slots = slots,
                     axisStartLabel = axisStart,
-                    line = true,
                 )
                 Hairline(verticalPadding = 12.dp)
                 MetricChartCard(
@@ -187,9 +191,7 @@ fun RealtimeScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                     color = ChartColors.fps,
                     unit = "FPS",
                     subtitle = "需在「帧率」页开启记录",
-                    slots = slots,
                     axisStartLabel = axisStart,
-                    line = true,
                 )
                 Hairline(verticalPadding = 12.dp)
                 MetricChartCard(
@@ -199,9 +201,7 @@ fun RealtimeScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                     color = ChartColors.temp,
                     unit = "℃",
                     valueFormatter = { "%.1f".format(it) },
-                    slots = slots,
                     axisStartLabel = axisStart,
-                    line = true,
                 )
             }
         }
