@@ -13,9 +13,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -85,38 +87,48 @@ fun ChoiceChip(
 }
 
 /**
- * 分组卡片：可选的小节标题 + 卡片本体。
+ * 分组卡片：卡片本体 + 卡内内容。
  *
- * [title] 传 null 时完全不渲染标题行 —— 概览页的卡片内部已有「内存 / GPU / CPU / 电池」
- * 圆环标签，再叠一行同名标题属于重复信息，去掉后卡片直接承担全部语义。
+ * 卡片**上方**不再渲染小节标题。全应用的统一规则是「页面身份归顶栏，分组说明归卡内」：
+ * 页面标题由根布局的 `OsTopBar` 承担，分组说明由 [CardSectionLabel] 写在卡片内部，
+ * 于是卡与卡之间只靠留白分隔，纵向节奏干净，也不会出现「顶栏写着帧率、下面又挂一行帧率」的重复。
  *
  * 传入 [onClick] 表示该卡片可下钻到详情页；卡片本身不画任何角标。
+ *
+ * [contentHeight] 给卡内内容一个**最小高度**，用来让并排的卡片等高。
+ * 网格里各格内容天然高度不同（环卡是 96dp 的环，折线卡是「表头 + 折线 + 时间轴」），
+ * 不约束就会一格高、一格矮，2×2 的横线对不齐。
+ * 用「约束内容高度」而不是「给卡片写死高度」：内容超出时卡片仍会自然长高，不会裁切。
+ *
+ * 这里必须 `fillMaxWidth()` —— 包装用的 `Box` 若不定宽，宽度会收紧到内容的自然宽度，
+ * 于是整块内容贴到卡内左侧，调用方的 `Modifier.align(CenterHorizontally)` 也只能在
+ * 那个收窄的宽度里居中（等于没居中），帧率卡这类 `fillMaxWidth()` 的内容更会只填到一半。
  */
 @Composable
 fun SectionCard(
-    title: String? = null,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    contentHeight: Dp? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    val c = osColors()
     Column(modifier = modifier.fillMaxWidth()) {
-        if (title != null) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 4.dp, end = 5.dp, bottom = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = title,
-                    style = OsText.sectionTitle,
-                    color = c.textTertiary,
-                    modifier = Modifier.weight(1f),
-                )
+        OsCard(onClick = onClick) {
+            if (contentHeight != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = contentHeight),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        content = content,
+                    )
+                }
+            } else {
+                content()
             }
         }
-        OsCard(onClick = onClick) { content() }
     }
 }
 
@@ -418,5 +430,63 @@ fun NoticeBanner(
             style = OsText.caption,
             color = c.textPrimary,
         )
+    }
+}
+
+/** 健康结论的严重程度 */
+enum class HealthLevel { Ok, Warn, Danger }
+
+/**
+ * 健康结论条。
+ *
+ * 概览页的第一行不再是某张具体卡片，而是一句「系统现在到底怎么样」的判断。
+ * 用户打开监控应用时最常问的是「有没有问题」，先给结论、再给数字，
+ * 比让他自己从四张卡的百分比里反推要快得多——四张卡负责「是多少」，
+ * 这一条负责「算不算正常」。
+ */
+@Composable
+fun HealthBanner(
+    level: HealthLevel,
+    title: String,
+    detail: String,
+    modifier: Modifier = Modifier,
+) {
+    val c = osColors()
+    val accent = when (level) {
+        HealthLevel.Ok -> c.green
+        HealthLevel.Warn -> c.orange
+        HealthLevel.Danger -> c.red
+    }
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(accent.copy(alpha = if (c.isDark) 0.18f else 0.12f))
+            .border(0.7.dp, accent.copy(alpha = 0.34f), shape)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(9.dp).background(accent, CircleShape))
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = OsText.valueStrong,
+                color = c.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (detail.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = detail,
+                    style = OsText.caption,
+                    color = c.textSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }

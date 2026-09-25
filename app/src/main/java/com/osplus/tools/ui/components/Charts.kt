@@ -93,10 +93,11 @@ object ChartColors {
 }
 
 /**
- * 圆环进度图。
+ * 圆环进度图（环心文案由 [content] 提供）。
  *
  * 参考图的核心视觉元素：粗圆头圆环 + 居中标签，
  * 用极简的几何形状表达一个百分比，比数字堆叠更易读。
+ * 概览页的指标卡、详情页的水位环都用它。
  */
 @Composable
 fun RingChart(
@@ -108,6 +109,7 @@ fun RingChart(
     label: String? = null,
     value: String? = null,
     unit: String? = null,
+    content: (@Composable () -> Unit)? = null,
 ) {
     val c = osColors()
     val target = progress.coerceIn(0f, 1f)
@@ -145,33 +147,135 @@ fun RingChart(
                 )
             }
         }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            if (value != null) {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        text = value,
-                        style = OsText.metricSmall,
-                        color = c.textPrimary,
-                        maxLines = 1,
-                    )
-                    if (unit != null) {
-                        Spacer(Modifier.width(1.dp))
+        if (content != null) {
+            content()
+        } else {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (value != null) {
+                    Row(verticalAlignment = Alignment.Bottom) {
                         Text(
-                            text = unit,
-                            style = OsText.micro,
-                            color = c.textSecondary,
-                            modifier = Modifier.padding(bottom = 2.dp),
+                            text = value,
+                            style = OsText.metricSmall,
+                            color = c.textPrimary,
+                            maxLines = 1,
                         )
+                        if (unit != null) {
+                            Spacer(Modifier.width(1.dp))
+                            Text(
+                                text = unit,
+                                style = OsText.micro,
+                                color = c.textSecondary,
+                                modifier = Modifier.padding(bottom = 2.dp),
+                            )
+                        }
                     }
                 }
+                if (label != null) {
+                    Text(
+                        text = label,
+                        style = OsText.micro,
+                        color = c.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
-            if (label != null) {
+        }
+    }
+}
+
+/**
+ * 概览指标环卡：名称、百分比、说明行全部收在环心。
+ *
+ * **环为什么是 96dp（两列版）：**
+ * 概览指标区是 2×2 网格，单卡只有 160dp 宽
+ * （360 − 左右各 14 的内边距 − 列间距 12，再对半），卡内容宽 132dp。
+ * 环还要给两侧留呼吸，因此 96dp 是这张卡里能用的上限附近（左右各余 18dp）。
+ *
+ * **环内的文字容量受内切矩形限制，不是内径宽度：**
+ * 环内文字块的四个角都必须落在内圆内，最下面那行说明文字的外沿是约束点。
+ * 按等线真实 ascent/descent 排版（名称 14.0dp + 百分比 22.2dp + 说明 10.8dp，行距 1dp），
+ * 三行总高 49.0dp，末行外沿距环心 24.5dp。环 96dp / 环宽 8dp 时内径 40dp，
+ * 于是说明行可用宽度 = `2·√(40² − 24.5²)` = 63.2dp。
+ *
+ * **所以两列版的说明行必须极短**（去掉一切前缀词）：
+ * `2400 MHz` 44.0dp ✓ / `222 MHz` 38.8dp ✓ / `10.7 GB 可用` 需更多但仍在限内 ✓；
+ * 而 GPU 型号 `Adreno830v2` 需 57.8dp，**已顶到 63.2dp 的安全边界**，
+ * 因此概览只显示实时频率，型号移到 GPU 详情页——两列布局的环心装不下它。
+ *
+ * **注意 `sp × 1.3` 不能当行高用**：21sp 真实行高 22.2dp，而 `21 × 1.3 = 27.3dp`
+ * 有 23% 误差，会直接改变环尺寸的结论。必须读字体 `ascent + descent`。
+ *
+ * [hint] 用 `\n` 分隔多行。
+ *
+ * 环心各行由外向内收紧层级：名称用次级灰（它只是索引）、
+ * 百分比用主题色加粗（唯一读数，视觉重心）、说明行用三级灰（补充信息）。
+ * 百分比沿用 [OsText.metric]（21sp），名称 [OsText.label]（13sp），
+ * 说明 [OsText.micro]（10sp）——字号与 1.3.0 的折线卡保持一致，不因换图形而改变字阶。
+ *
+ * [enabled] 为 false 时表示数值不可读（如 GPU 负载 -1）：画空圈 + 灰字，
+ * 而不是画一个 0% 的环——「读不到」和「负载为零」是两回事，
+ * 后者会让人误以为设备闲着。
+ */
+@Composable
+fun OsMetricRing(
+    label: String,
+    valueText: String,
+    unit: String,
+    hint: String,
+    progress: Float,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    size: Dp = 96.dp,
+    stroke: Dp = 8.dp,
+    enabled: Boolean = true,
+) {
+    val c = osColors()
+    val hintLines = remember(hint) { hint.split('\n') }
+    RingChart(
+        progress = if (enabled) progress else 0f,
+        color = accent,
+        modifier = modifier,
+        size = size,
+        stroke = stroke,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = label,
+                style = OsText.label,
+                color = c.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Visible,
+            )
+            Spacer(Modifier.height(1.dp))
+            Row(verticalAlignment = Alignment.Bottom) {
                 Text(
-                    text = label,
-                    style = OsText.micro,
-                    color = c.textSecondary,
+                    text = valueText,
+                    style = OsText.metric,
+                    color = if (enabled) accent else c.textTertiary,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                )
+                if (unit.isNotEmpty()) {
+                    Spacer(Modifier.width(1.dp))
+                    Text(
+                        text = unit,
+                        style = OsText.micro,
+                        color = if (enabled) accent else c.textTertiary,
+                        modifier = Modifier.padding(bottom = 3.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(1.dp))
+            hintLines.forEach { line ->
+                Text(
+                    text = line,
+                    style = OsText.micro,
+                    color = c.textTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Visible,
                 )
             }
         }
@@ -192,6 +296,8 @@ fun LineChart(
     modifier: Modifier = Modifier,
     height: Dp = 68.dp,
     valueFormatter: (Float) -> String = { "%.0f".format(it) },
+    /** 是否在顶部标注峰值。概览页的迷你折线不需要，数值由卡片头部承担 */
+    showPeak: Boolean = true,
 ) {
     val c = osColors()
     val safeMax = maxValue.coerceAtLeast(0.001f)
@@ -201,7 +307,7 @@ fun LineChart(
     val density = LocalDensity.current
 
     Canvas(modifier = modifier.fillMaxWidth().height(height)) {
-        val labelH = with(density) { 14.dp.toPx() }
+        val labelH = if (showPeak) with(density) { 14.dp.toPx() } else 0f
         val chartTop = labelH
         val chartBottom = size.height
         val chartH = (chartBottom - chartTop).coerceAtLeast(1f)
@@ -262,9 +368,11 @@ fun LineChart(
         )
 
         // 顶部标注：只标峰值，当前值由卡片头部承担，避免同一数字出现两次
-        val peak = data.maxOrNull() ?: 0f
-        val pm = measurer.measure("峰值 " + valueFormatter(peak), labelStyle)
-        drawText(textLayoutResult = pm, topLeft = Offset(0f, 0f))
+        if (showPeak) {
+            val peak = data.maxOrNull() ?: 0f
+            val pm = measurer.measure("峰值 " + valueFormatter(peak), labelStyle)
+            drawText(textLayoutResult = pm, topLeft = Offset(0f, 0f))
+        }
     }
 }
 

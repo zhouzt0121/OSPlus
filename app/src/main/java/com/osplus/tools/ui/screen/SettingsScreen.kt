@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.Shell
+import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
@@ -58,7 +59,9 @@ fun SettingsScreen(vm: DeviceViewModel) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 12.dp, end = 12.dp, top = 2.dp, bottom = 104.dp,
+            // 与其余各页保持同一组内边距：左右 14dp 让卡片左缘与顶栏标题左缘对齐，
+            // 顶部 4dp 与顶栏底边留出呼吸空间。
+            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
         ),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -74,7 +77,7 @@ fun SettingsScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "权限") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow(
                         label = "Root",
@@ -118,8 +121,10 @@ fun SettingsScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "外观") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 5.dp)) {
+                    CardSectionLabel("主题")
+                    Spacer(Modifier.height(8.dp))
                     SegmentedTabs(
                         tabs = AppThemeMode.entries.map { it.label },
                         selectedIndex = AppThemeMode.entries.indexOf(themeMode),
@@ -137,7 +142,7 @@ fun SettingsScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "采样") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     SwitchRow(
                         label = "实时采样",
@@ -152,10 +157,10 @@ fun SettingsScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "关于") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("应用", "OSPlus")
-                    InfoRow("版本", "1.2.0")
+                    InfoRow("版本", "1.4.0")
                     InfoRow("包名", context.packageName)
                     InfoRow("设备", "${Build.MANUFACTURER} ${Build.MODEL}")
                     InfoRow("系统", "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
@@ -166,8 +171,10 @@ fun SettingsScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "说明") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("说明")
+                    Spacer(Modifier.height(8.dp))
                     Text(
                         text = "· 数据全部来自 /proc、/sys 与系统 API，不做任何云端上报。\n" +
                             "· 频率/充电控制直接写入内核节点，不同机型可用项存在差异。\n" +

@@ -111,8 +111,6 @@ object OsText {
     val metric = TextStyle(fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
     /** 卡片内次级大数值 */
     val metricSmall = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-    /** 卡片外的小节标题 */
-    val sectionTitle = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.6.sp)
     /** 行标签 */
     val label = TextStyle(fontSize = 13.sp)
     /** 行数值 */

@@ -11,10 +11,11 @@ android {
         applicationId = "com.osplus.tools"
         minSdk = 33
         targetSdk = 36
-        // versionName 仍是 1.2.0：本轮是同一版本的修复重打包，
-        // versionCode 递增只为让新包能覆盖安装已发布的 1.2.0（code 3）
-        versionCode = 4
-        versionName = "1.2.0"
+        // 1.3.0：信息架构改版（底栏四页 + 设置移出导航 + 统一顶栏 + 电源页提升为一级页）
+        // 1.4.0：概览页指标改回圆环（CPU / GPU / 内存），电池卡换成帧率折线卡
+        // versionCode 递增以便覆盖安装已发布的 1.2.0（code 4）
+        versionCode = 6
+        versionName = "1.4.0"
     }
 
     buildFeatures {

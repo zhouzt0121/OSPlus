@@ -4,14 +4,19 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -20,14 +25,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.blur
 import top.yukonga.miuix.kmp.blur.drawBackdrop
@@ -156,31 +165,100 @@ private fun FloatingBarItem(
 }
 
 /**
- * 悬浮返回按钮。
+ * 顶栏内容区高度。
  *
- * 顶栏移除后二级详情页失去可见的返回入口（返回手势本身不可见，底部导航则会
- * 直接跳回一级页），因此在左上角保留一个悬浮圆形按钮作为显式出口。
+ * 所有页面共用同一个常量，且顶栏只在根布局里渲染一次，
+ * 因此「概览 / 性能 / 帧率 / 电源 / 四个详情页 / 设置」的顶栏高度、内边距、
+ * 字号与按钮尺寸完全一致——不会出现某页高一点、某页矮一点的错位。
+ */
+val TopBarHeight = 56.dp
+
+/** 顶栏圆形按钮的直径 */
+private val TopBarActionSize = 36.dp
+
+/**
+ * 统一顶栏。
+ *
+ * 左侧是页面标题，二级页在标题左侧多一个返回按钮；右侧是页面级动作。
+ * 动作区用 [RowScope] 暴露，调用方按页传入内容，但按钮尺寸与间距由这里统一，
+ * 避免各页各写一套导致同一排图标大小不一。
+ *
+ * 概览页把「清理内存 / 清理交换 / 记录帧率 / 设置」四个动作都放在这一排：
+ * 它们都属于「看到水位、顺手处理一下」，原先散在页面底部，需要滚到末尾才点得到；
+ * 移到顶栏后无论滚到哪一屏都够得着，也把首屏整块让给了数据本身。
  */
 @Composable
-fun OsFloatingBackButton(
+fun OsTopBar(
+    title: String,
+    modifier: Modifier = Modifier,
+    onBack: (() -> Unit)? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
+    val c = osColors()
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .height(TopBarHeight)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (onBack != null) {
+            OsTopBarAction(
+                icon = Icons.AutoMirrored.Rounded.ArrowBack,
+                contentDescription = "返回",
+                onClick = onBack,
+            )
+            Spacer(Modifier.width(10.dp))
+        }
+        Text(
+            text = title,
+            style = OsText.pageTitle,
+            color = c.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.weight(1f))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            content = actions,
+        )
+    }
+}
+
+/**
+ * 顶栏圆形按钮。
+ *
+ * 用浅色圆底 + 发丝描边，而不是纯图标：概览页顶栏并排放着四个动作，
+ * 无底色的图标会糊成一条，圆底给每个动作划出明确的点击范围，
+ * 也让「这里可以点」在一条没有文字的顶栏里仍然成立。
+ */
+@Composable
+fun OsTopBarAction(
+    icon: ImageVector,
+    contentDescription: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    tint: Color? = null,
+    enabled: Boolean = true,
 ) {
     val c = osColors()
     Box(
         modifier = modifier
-            .statusBarsPadding()
-            .padding(start = 12.dp, top = 8.dp)
-            .size(38.dp)
-            .osCard(CircleShape, elevation = 8.dp)
-            .pressable(onClick),
+            .size(TopBarActionSize)
+            .clip(CircleShape)
+            .background(c.cardAlt)
+            .border(0.7.dp, c.hairline, CircleShape)
+            .then(if (enabled) Modifier.pressable(onClick) else Modifier)
+            .alpha(if (enabled) 1f else 0.4f),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
-            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-            contentDescription = "返回",
-            tint = c.textSecondary,
-            modifier = Modifier.size(20.dp),
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = tint ?: c.textSecondary,
+            modifier = Modifier.size(19.dp),
         )
     }
 }

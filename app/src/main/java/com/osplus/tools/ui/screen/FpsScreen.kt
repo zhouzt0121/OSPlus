@@ -33,6 +33,7 @@ import com.osplus.tools.core.FpsRecorder
 import com.osplus.tools.core.Preferences
 import com.osplus.tools.core.Shell
 import com.osplus.tools.service.FpsOverlayService
+import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.CoreBarsChart
 import com.osplus.tools.ui.components.InfoRow
@@ -140,8 +141,10 @@ fun FpsScreen(vm: DeviceViewModel) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            SectionCard(title = "记录控制") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 2.dp)) {
+                    CardSectionLabel("记录控制")
+                    Spacer(Modifier.height(6.dp))
                     SwitchRow(
                         label = "开始记录",
                         summary = "每秒留档一条：帧率 + 每核占用/频率 + GPU + 内存 + 功耗 + 温度" +
@@ -234,8 +237,10 @@ fun FpsScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "分析窗口") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 4.dp)) {
+                    CardSectionLabel("分析窗口")
+                    Spacer(Modifier.height(6.dp))
                     SegmentedTabs(
                         tabs = FpsWindow.entries.map { it.label },
                         selectedIndex = window,
@@ -257,8 +262,10 @@ fun FpsScreen(vm: DeviceViewModel) {
             // 既让本应用自身卡顿，也污染正在测量的帧率数据。
             // 停止记录后再统一绘图分析。
             item {
-                SectionCard(title = "正在记录") {
+                SectionCard {
                     Column(Modifier.padding(vertical = 3.dp)) {
+                        CardSectionLabel("正在记录")
+                        Spacer(Modifier.height(6.dp))
                         InfoRow("已记录", "${records.size} 条", emphasis = true)
                         InfoRow("记录时长", elapsedText, emphasis = true)
                         InfoRow("当前帧率", "%.1f FPS".format(liveSample.fps))
@@ -288,8 +295,10 @@ fun FpsScreen(vm: DeviceViewModel) {
             }
         } else {
             item {
-                SectionCard(title = "帧率") {
+                SectionCard {
                     Column(Modifier.padding(vertical = 2.dp)) {
+                        CardSectionLabel("帧率曲线")
+                        Spacer(Modifier.height(6.dp))
                         MetricChartCard(
                             title = "实时帧率",
                             values = downsample(windowed.map { it.fps }, bars),
@@ -323,8 +332,10 @@ fun FpsScreen(vm: DeviceViewModel) {
             }
 
             item {
-                SectionCard(title = "同期系统指标") {
+                SectionCard {
                     Column(Modifier.padding(vertical = 2.dp)) {
+                        CardSectionLabel("同期系统指标")
+                        Spacer(Modifier.height(6.dp))
                         MetricChartCard(
                             title = "CPU 总占用",
                             values = downsample(windowed.map { it.cpuLoad }, bars),
@@ -368,8 +379,10 @@ fun FpsScreen(vm: DeviceViewModel) {
             }
 
             item {
-                SectionCard(title = "各核心占用（最新一条）") {
+                SectionCard {
                     Column(Modifier.padding(vertical = 4.dp)) {
+                        CardSectionLabel("各核心占用（最新一条）")
+                        Spacer(Modifier.height(6.dp))
                         CoreBarsChart(
                             coreIndexes = coreIndexes,
                             loads = latest?.coreLoads ?: emptyList(),
@@ -380,8 +393,10 @@ fun FpsScreen(vm: DeviceViewModel) {
             }
 
             item {
-                SectionCard(title = "记录汇总") {
+                SectionCard {
                     Column(Modifier.padding(vertical = 3.dp)) {
+                        CardSectionLabel("记录汇总")
+                        Spacer(Modifier.height(6.dp))
                         val fpsValues = windowed.map { it.fps }.filter { it > 0 }
                         val avgFps = if (fpsValues.isEmpty()) 0.0 else fpsValues.average()
                         val jankTotal = windowed.sumOf { it.jank }
@@ -409,8 +424,10 @@ fun FpsScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "当前实时统计") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("当前实时统计")
+                    Spacer(Modifier.height(6.dp))
                     InfoRow("帧率", "%.1f FPS".format(liveSample.fps), emphasis = true)
                     InfoRow("平均帧耗时", "%.2f ms".format(liveSample.avgFrameMs))
                     InfoRow("最大帧耗时", "%.2f ms".format(liveSample.maxFrameMs))
@@ -422,8 +439,10 @@ fun FpsScreen(vm: DeviceViewModel) {
         }
 
         item {
-            SectionCard(title = "系统级帧率") {
+            SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("系统级帧率")
+                    Spacer(Modifier.height(6.dp))
                     var gfxInfo by remember { mutableStateOf("") }
                     LaunchedEffect(Unit) {
                         gfxInfo = Shell.run(

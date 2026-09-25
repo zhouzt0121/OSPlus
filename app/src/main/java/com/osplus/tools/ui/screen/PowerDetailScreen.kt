@@ -59,7 +59,7 @@ fun PowerDetailScreen(vm: DeviceViewModel) {
             tabs = tabs,
             selectedIndex = tab,
             onSelect = { tab = it },
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
         )
         when (tab) {
             0 -> PowerUsageTab(vm)
