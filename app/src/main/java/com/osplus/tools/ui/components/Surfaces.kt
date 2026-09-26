@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
@@ -331,19 +332,75 @@ fun Hairline(
 }
 
 /**
- * 页面底色。
+ * 页面底色（画布层）。
  *
- * 以中性浅灰为底，仅在顶部叠一层几乎不可见的品牌色晕染，
- * 避免大面积纯色显得死板，同时不会干扰卡片与文字的对比度。
+ * ### 这一层为什么必须不是纯色
+ *
+ * 悬浮玻璃的折射做的事是「把采样点位移一小段，再取那一处的颜色」。
+ * 如果背景是纯色，位移后的采样点取到的还是同一个颜色——**位移等于白做**。
+ *
+ * 实测过：底栏外侧背景 `rgb(255,255,255)`、内部 `rgb(232,230,228)`，
+ * 一片均匀，玻璃看起来就是一块浅灰圆角块，完全读不出材质。
+ * 而切到「性能」页（背后有图表曲线）立刻就有折射效果。
+ * 差别不在玻璃，在背景有没有**可被位移的纹理**。
+ *
+ * 所以这一层铺三组幅度极小的渐变，把整块画布——**尤其是底栏所在的底部一带**——
+ * 变成有梯度的面：左上提亮、右下压深、底部再补一段竖向渐变。
+ *
+ * 幅度严格控制在 3~5% 亮度差内。它的职责是让上层的玻璃显影，
+ * 自己不能跳出来抢注意力：一旦肉眼能明确看出「这里有一块渐变」，就是调过头了。
  */
 @Composable
 fun PageBackground(modifier: Modifier = Modifier) {
     val c = osColors()
+    val dark = c.isDark
+    val lift = if (dark) Color(0xFF1A2231) else Color.White
+    val sink = if (dark) Color(0xFF090B0E) else Color(0xFFDDE5F1)
+
     Box(
         modifier
             .fillMaxSize()
             .background(c.background)
+            .drawBehind {
+                // 左上：提亮
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            lift.copy(alpha = if (dark) 0.55f else 0.72f),
+                            Color.Transparent,
+                        ),
+                        center = Offset(size.width * 0.14f, size.height * 0.02f),
+                        radius = size.width * 1.15f,
+                    )
+                )
+                // 右下：压深
+                drawRect(
+                    brush = Brush.radialGradient(
+                        colors = listOf(
+                            sink.copy(alpha = if (dark) 0.75f else 0.80f),
+                            Color.Transparent,
+                        ),
+                        center = Offset(size.width * 0.94f, size.height * 1.02f),
+                        radius = size.width * 1.10f,
+                    )
+                )
+                // 底部一带单独补一段竖向渐变。
+                // 底栏浮在这里，它必须落在**一段明确的梯度**上；
+                // 上面两组径向在底部中央只是「擦边」，不足以支撑整条底栏，
+                // 少了这一段，底栏中段仍然会落在近似纯色上、折射依旧无效。
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            sink.copy(alpha = if (dark) 0.45f else 0.50f),
+                        ),
+                        startY = size.height * 0.58f,
+                        endY = size.height,
+                    )
+                )
+            }
     ) {
+        // 顶部的品牌色晕染保留：它承担「页面身份」，与上面的画布梯度分工不同
         Box(
             Modifier
                 .fillMaxWidth()
@@ -352,22 +409,8 @@ fun PageBackground(modifier: Modifier = Modifier) {
                     Brush.verticalGradient(
                         listOf(
                             c.primary.copy(alpha = if (c.isDark) 0.07f else 0.05f),
-                            c.background,
+                            Color.Transparent,
                         )
-                    )
-                )
-        )
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(
-                            c.primary.copy(alpha = if (c.isDark) 0.05f else 0.04f),
-                            androidx.compose.ui.graphics.Color.Transparent,
-                        ),
-                        center = Offset(880f, -40f),
-                        radius = 900f,
                     )
                 )
         )
