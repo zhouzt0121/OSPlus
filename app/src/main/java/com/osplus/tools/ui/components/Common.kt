@@ -361,12 +361,13 @@ fun SegmentedTabs(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            // 槽体是一块凹进去的玻璃：不加投影（elevation = 0），否则它会浮在卡片之上
+            // 槽体是一块**凹玻璃**：明暗反转 + 内阴影。
+            // 不是「浅一点的凸玻璃」——受光面位置不同才是凹陷感的来源。
             .glassSurface(
                 shape = RoundedCornerShape(13.dp),
                 cornerRadius = 13.dp,
                 body = c.track,
-                elevation = 0.dp,
+                concave = true,
             )
             .padding(3.dp)
     ) {

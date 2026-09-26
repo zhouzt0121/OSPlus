@@ -86,6 +86,11 @@ uniform float uBand;
 uniform float uStrength;
 uniform float uDispersion;
 uniform float uDepth;
+uniform float uHighlightWidth;
+uniform float uHighlightStrength;
+uniform float uShadowWidth;
+uniform float uShadowStrength;
+uniform float uTintAlpha;
 
 // 圆角矩形的**解析梯度**：直边上给出轴对齐法线，圆角处给出径向法线。
 // 用 normalize(p) 近似在直边上会把法线拉成斜的，整圈折射方向跟着歪掉。
@@ -96,6 +101,48 @@ float2 gradSd(float2 c, float2 hs, float r) {
     }
     float gx = step(q.y, q.x);
     return sign(c) * float2(gx, 1.0 - gx);
+}
+
+// 折射之外的四道整面处理。抽成函数是因为**早退路径也必须走一遍**：
+// 环带内做了而环带外没做，玻璃内部与边缘之间会出现一条可见的色阶断层。
+//
+// 需要 sd（SDF 距离）是因为高光与内阴影都是**贴边的一圈**，
+// 只有知道「当前像素离轮廓多远」才能把光叠在该在的位置上。
+half4 finish(half4 c, float sd) {
+    // ① 饱和度提升。
+    // 苹果的液态玻璃会让透过它的背景**更饱和**，而不只是模糊 + 变灰。
+    // 少了这一步，玻璃看着像蒙了层灰纱；加上之后才有「透亮」的观感。
+    float luma = dot(c.rgb, half3(0.2126, 0.7152, 0.0722));
+    c.rgb = mix(half3(luma), c.rgb, half(1.18));
+
+    // ② 亮背景自适应压深。
+    // 浅色画布上「玻璃颜色 ≈ 背景颜色」是这类效果最常见的失效方式。
+    // 参考实现 liquid-glass-react 为此单独开了 overLight 参数，
+    // 并同时改四处（模糊基数 12→4、投影加深到 0.75、位移减半、叠 20% 黑色蒙版）。
+    // 这里取其中最轻的一种：只按亮度压一点点，且**只在很亮的背景上**起作用，
+    // 暗背景完全不动——否则会把深色主题压得更黑。
+    float bright = smoothstep(0.74, 0.97, luma);
+    c.rgb *= half(1.0 - 0.09 * bright);
+
+    // sd 到轮廓内侧的归一化距离：轮廓处 0，向里递增
+    float inHl = clamp(-sd / max(uHighlightWidth, 1.0), 0.0, 1.0);
+    float inSh = clamp(-sd / max(uShadowWidth, 1.0), 0.0, 1.0);
+
+    // ③ 内高光：**紧贴轮廓**的一圈，向内 highlightWidth 内衰减到 0。
+    // 它是玻璃「受光面」的体现——玻璃本体透光，只有边缘因为折射聚集而发亮。
+    // 强度必须克制：超过 0.2 就从「玻璃反光」变成「描了一圈白边」。
+    float highlight = (1.0 - inHl) * uHighlightStrength;
+
+    // ④ 内阴影：落在高光**内侧**的一圈，用抛物峰（0.5 处最强）而非单调衰减。
+    // 单调衰减会让整个内部一起变暗、玻璃发闷；
+    // 只压出一条带，才是「玻璃有厚度、光在内部衰减」的样子。
+    float shadow = inSh * (1.0 - inSh) * 4.0 * uShadowStrength;
+
+    // ⑤ 表层薄雾：极低透明度的白，控制整体通透度。
+    // 玻璃再透也不是完全无色，这一层把它从「一块玻璃」拉回「一片玻璃」。
+    c.rgb = c.rgb * half(1.0 - shadow) + half3(highlight + uTintAlpha);
+
+    return c;
 }
 
 half4 main(float2 coord) {
@@ -110,7 +157,7 @@ half4 main(float2 coord) {
 
     // 环带之外直接返回原像素：只有轮廓内侧 uBand 像素那一圈付折射的代价。
     // 中心占整块玻璃的绝大部分面积，这一步把它们从 3 次取样降到 1 次。
-    if (-sd >= uBand) return child.eval(coord);
+    if (-sd >= uBand) return finish(child.eval(coord), sd);
 
     // 位移用圆弧剖面，不用 smoothstep。
     // circleMap 正是圆形透镜的矢高曲线，位移从环带内缘的 0 平滑升到轮廓处的最大值，
@@ -129,37 +176,48 @@ half4 main(float2 coord) {
     half4 mid = child.eval(sp);
     half4 red = child.eval(sp + n * e);
     half4 blue = child.eval(sp - n * e);
-    return half4(red.r, mid.g, blue.b, mid.a);
+    return finish(half4(red.r, mid.g, blue.b, mid.a), sd);
 }
 """
 
 /**
  * 折射环带宽度（px）：从轮廓往里算，只有这一圈参与折射。
  *
- * 带宽太窄（< 8px）时位移只发生在最后几个像素里，肉眼来不及看出「折弯」；
- * 太宽（> 32px）则会吃掉玻璃内部太多面积，中心无畸变区被压得只剩一条。
+ * 取 38px 是与 [RefractionStrength] **成对**定的，不能单独调：
+ * 两者共同决定折射的「陡度」，即位移从轮廓向内的衰减有多快。
+ *
+ * 酷安的实际取值是 height=38 / amount=10，比值 **0.26**；
+ * 我们最初取 20 / 0.9，比值 **0.90**——同样能看出位移，但位移全挤在
+ * 最后 20px 里陡降，观感是「背景被硬拽了一下」而不是「光线弯折」。
+ * 宽环带 + 小位移（0.26）才让位移沿法线平缓铺开，是玻璃该有的样子。
  */
-private const val RefractionBandPx = 20f
+private const val RefractionBandPx = 38f
 
 /**
  * 环带内的最大位移，以 [RefractionBandPx] 为单位。
  *
- * 0.9 表示轮廓处最多把采样点沿法线拉进来 0.9 × 20 = 18px。
- * 实测区间：**< 0.4 基本看不出**；**> 1.4 会把背景撕出可见重影**，
+ * 0.26 表示轮廓处最多把采样点沿法线拉进来 0.26 × 38 ≈ 10px。
+ *
+ * **这个值必须和 [RefractionBandPx] 一起看**：单独说「位移 10px」没有意义，
+ * 因为同样 10px 的位移，铺在 20px 的环带里是陡降、铺在 38px 里才是渐变。
+ * 实测区间（按比值）：**< 0.15 基本看不出**；**> 0.5 会把背景撕出可见重影**，
  * 尤其当下方正好滚过一行小字时。
  *
- * 注意：折射能不能被看见，**首先取决于模糊半径与玻璃不透明度**，其次才是这个值。
- * 背景被糊成匀质底噪、或被实色盖到 0.55 以上，再大的位移也没有参照物。
+ * 注意：折射能不能被看见，**首先取决于画布有没有纹理、以及模糊半径与玻璃不透明度**，
+ * 其次才是这个值。背景被糊成匀质底噪、或被实色盖到 0.55 以上，再大的位移也没有参照物。
  */
-private const val RefractionStrength = 0.9f
+private const val RefractionStrength = 0.26f
 
 /**
  * 边缘色散（px）。
  *
- * R / B 通道沿法线各偏移这么多像素。取 1px 量级：够在轮廓处留下一条肉眼可辨、
- * 但不会被认为是「渲染错误」的彩边。0 表示关闭（退化为纯位移折射）。
+ * R / B 通道沿法线各偏移这么多像素，在轮廓处留下一圈彩边。
+ *
+ * 默认 **0（关闭）**：酷安在正式 UI 里也是关的。色散是「光学真实感」的加分项，
+ * 但它同时是「看起来像渲染错误」的高危项——在密集图表上方尤其明显。
+ * 需要时调到 1px 量级即可（`chromaStrength` 的参考区间 0.5~1.5）。
  */
-private const val RefractionDispersionPx = 1.1f
+private const val RefractionDispersionPx = 0f
 
 /**
  * 折射法线里的径向分量（0 = 关闭，与参考实现 `depthEffect = false` 一致）。
@@ -169,6 +227,32 @@ private const val RefractionDispersionPx = 1.1f
  * 再大会让直边上的法线不再垂直于边缘，整块玻璃看起来像被吹胀了。
  */
 private const val RefractionDepth = 0f
+
+/**
+ * 内高光：**紧贴轮廓**的一圈，向内 [GlassHighlightWidthPx] 内衰减到 0。
+ *
+ * 宽度 4~8px、强度 0.08~0.15。强度**超过 0.2 就从「玻璃反光」变成「描了一圈白边」**——
+ * 这是这一组参数里最容易调过头的一个。
+ */
+private const val GlassHighlightWidthPx = 6f
+private const val GlassHighlightStrength = 0.12f
+
+/**
+ * 内阴影：落在高光**内侧**的一圈，用抛物峰（半程处最强）而非单调衰减。
+ *
+ * 单调衰减会让整个内部一起变暗、玻璃发闷；只压出一条带，
+ * 才是「玻璃有厚度、光在内部衰减」的样子。宽度 6~10px、强度 0.05~0.12。
+ */
+private const val GlassShadowWidthPx = 8f
+private const val GlassShadowStrength = 0.10f
+
+/**
+ * 表层薄雾：极低透明度的白，控制整体通透度。
+ *
+ * 玻璃再透也不是完全无色。取值 0.05~0.10；
+ * 高于 0.15 会盖住背景，折射也就没有参照物了。
+ */
+private const val GlassTintAlpha = 0.08f
 
 /** AGSL 与运行时着色器需要 Android 13（API 33）；低于此版本整条折射链降级 */
 private fun runtimeShaderSupported(): Boolean =
@@ -206,6 +290,11 @@ private fun buildRefraction(
         shader.setFloatUniform("uStrength", RefractionStrength)
         shader.setFloatUniform("uDispersion", RefractionDispersionPx)
         shader.setFloatUniform("uDepth", RefractionDepth)
+        shader.setFloatUniform("uHighlightWidth", GlassHighlightWidthPx)
+        shader.setFloatUniform("uHighlightStrength", GlassHighlightStrength)
+        shader.setFloatUniform("uShadowWidth", GlassShadowWidthPx)
+        shader.setFloatUniform("uShadowStrength", GlassShadowStrength)
+        shader.setFloatUniform("uTintAlpha", GlassTintAlpha)
         PlatformRenderEffect.createRuntimeShaderEffect(shader, "child")
     }.getOrNull()
 }
