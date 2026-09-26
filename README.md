@@ -1,6 +1,6 @@
 # OSPlus · Android 性能监视工具
 
-包名 `com.osplus.tools` ｜ 版本 1.4.0 ｜ minSdk 33 (Android 13) ｜ targetSdk 36
+包名 `com.osplus.tools` ｜ 版本 1.5.0 ｜ minSdk 33 (Android 13) ｜ targetSdk 36
 
 一个完全自研的本地性能监视与调优工具。所有数据来自 `/proc`、`/sys` 与系统 API，
 **不做任何云端上报**；涉及内核写入的功能全部经 root 执行。
@@ -17,13 +17,14 @@
 | 页面 | 能力 | 数据来源 |
 |---|---|---|
 | **概览**（一级） | **健康结论条**（按权限 / SoC 结温 / 电池温度 / 内存四项判据给出一句「算不算正常」）；**2×2 指标网格**（CPU / GPU / 内存用**圆环**表达水位，名称、百分比、说明行**全部收在环心**；第四格为**帧率折线卡**）；设备概况（含 **GPU 型号**）。四个动作（**清理内存 / 清理交换 / 记录帧率 / 设置**）全部收进**顶栏右侧**，滚到任何位置都够得着 | 见下 |
-| **性能**（一级） | **进程摘要置顶**（图标 / 名称 / CPU%，点卡片进进程管理）；**5 秒 / 1 分 / 5 分 / 30 分 时间窗分段控件**；CPU 总占用、内存占用、GPU 频率、整机功耗、实时帧率、电池温度六条**折线趋势**；每核占用与频率柱状图；**调优入口**（CPU 调速器 / GPU 调速器 / ZRAM，右侧显示当前状态摘要） | `/proc`、`/sys` |
+| **性能**（一级） | **进程摘要置顶**（图标 / 名称 / CPU%，点卡片进进程管理）；**5 秒 / 1 分 / 5 分 / 30 分 时间窗分段控件**；CPU 总占用、内存占用、GPU 频率、整机功耗、实时帧率、电池温度六条**折线趋势**；每核占用与频率柱状图；**调优入口**（CPU 调速器 / GPU 调速器 / ZRAM / 性能调度，右侧显示当前状态摘要） | `/proc`、`/sys` |
 | **帧率**（一级） | 基于 Choreographer 的实时 FPS、平均/最大帧耗时、卡顿计数；**30 秒 / 1 / 5 / 10 分钟 / 全部 多档分析窗口**；全部为**折线趋势**；**录制期间每秒同步留档每核占用与频率、GPU、内存、功耗、温度**，并实时显示递增的**记录时长**；**一键导出 CSV**；**跨应用帧率悬浮窗（轻点开始/停止记录，长按拖动位置，可调不透明度）**；系统 `dumpsys gfxinfo` 明细 | 系统 API |
 | **设置**（二级，顶栏右侧齿轮） | **主题切换（跟随系统 / 浅色 / 深色）与壁纸取色（Monet）开关**；Root 状态与 `su` 路径、使用情况访问、悬浮窗、通知权限；采样开关与间隔；设备与内核信息 | — |
 | **内存详情** | 占用率与 SWAP 累积曲线；内存明细；ZRAM 容量调整（重建交换分区）；swappiness 调节 | `/proc/meminfo`、`/proc/swaps`、`/sys/block/zram*` |
 | **GPU 详情** | 频率/负载累积曲线；型号 / 当前频率 / 调速器 / 可用频率表；**调速器切换**；频率上限调节 | `kgsl-3d0` sysfs |
 | **CPU 详情** | 总占用与每核占用柱状图；核心簇频率与量程；**调速器切换**；**按核心选择目标后以「挡位」方式锁定频率（含调频策略组影响范围提示与写入回读校验）** | `cpufreq` sysfs |
 | **进程详情** | 全量进程列表（**应用图标** / CPU% / 常驻内存 / 用户 / 状态），按 CPU 或内存排序，强制停止与结束进程 | root `top -b -n 1` |
+| **性能调度**（二级） | 接管 **Uperf Game Turbo** 与 **A-SOUL Games Optimization** 两个模块：Uperf 电源档位切换（省电 / 均衡 / 性能 / 极速 / 自动 / 疯狂）、分应用模式规则增删改（含 `*` 默认与 `-` 息屏两条特殊规则）、A-SOUL 运行模式（硬亲和 / 软迁移 / 硬迁移）与实时模式、分游戏亲和覆盖、两个守护进程的重启。规则以**卡内展开**方式编辑，应用选择器带搜索 | 模块自身的配置文件 |
 | **电源**（一级） | **电池态势卡**（环图 + 剩余可用时长估算 + 电压 / 温度 / 电流 / 供电状态）；**耗电统计**：近 24 小时各应用**图标**、前台/可见时长与估算耗电占比；**充电统计**：功耗与电池温度折线、电压/电流/功率/容量/循环次数；**充电控制**：充电开关、充电电流上限 | `UsageStatsManager`、`power_supply` sysfs |
 | **交互** | **统一顶栏**（各页高度 / 字号 / 按钮尺寸完全一致）：左侧标题、二级页多一个返回按钮、右侧为页面动作区；底部导航为**液态玻璃**材质、纯图标（无文字），点选切换一级页；预测性返回手势：二级路由返回回到所属一级页，一级页返回回到概览，概览页按返回正常退出应用 | — |
 
@@ -239,12 +240,45 @@ top -b -n 1 -q -o %CPU,RES,PID,USER,S,ARGS
   页面本身不再自绘标题，也无需为顶栏预留顶部留白（内容区只留 4dp 呼吸空间）；
   顶栏自带状态栏内边距，因此根布局用 `Column` 让顶栏占固定行、内容区吃掉剩余高度，
   页面内容永远不会钻到顶栏下面
-- **底部导航为液态玻璃**：`rememberLayerBackdrop()` 把「背景 + 页面内容」整层记录进 `GraphicsLayer`
-  （导航条自身不在其中，否则会把自己的高光也糊进去），导航条再对该层做
-  `drawBackdrop(blur(26.dp))` 取真实模糊背景，之上叠 `liquidGlass()` 的半透明着色、
-  顶光竖向渐变与线性渐变高光描边。内容滚到导航条下方时会被模糊后透出来，形成悬浮层次
+- **底部导航为液态玻璃（Liquid Glass）**，不是「半透明 + 高斯模糊」：
+  `rememberLayerBackdrop()` 把「背景 + 页面内容」整层记录进 `GraphicsLayer`
+  （导航条自身不在其中，否则会把自己的高光也糊进去），导航条再对该层走五层合成——
+  ① `drawBackdrop` 实时采样背景 ② 高斯模糊（`GlassBlurRadius = 14.dp`）
+  ③ **AGSL 折射** ④ 半透明玻璃着色 + 竖向掠光 + 非均匀描边 + 内高光 ⑤ 图标软阴影。
+  内容滚到导航条下方时会被模糊、并被边缘拉扯后透出来，形成悬浮层次
+- **折射是「玻璃」与「毛玻璃」的分界线**（`ui/components/GlassShaders.kt`）：
+  毛玻璃只把背景糊成匀质底噪，控件看起来像磨砂塑料；真正的玻璃在**边缘**改变光路——
+  越靠轮廓背景被拉扯得越明显、中心几乎无畸变
+- **位移场必须用圆角矩形 SDF，不能用「到中心的距离」**：后者在四角才等于 1、
+  四条边中点只有 0.707，于是折射全挤在胶囊两端圆弧上、长直边几乎零畸变，
+  真机上看起来就是「没生效」。改用 SDF 后轮廓一圈恒为 0，
+  `k = 1 - smoothstep(-uBand, 0, sd)` 让整圈边缘都进入折射，
+  `sd < -uBand` 的内部严格保持 k = 0；环带宽 `uBand`（20px）独立可调，
+  不再与控件宽高比纠缠。位移量 `k × uStrength × uBand` 全是像素量纲，
+  `uStrength = 0.9` 即轮廓处最多沿法线拉进来 18px。
+  另外沿法线给 R / B 各偏移约 1px 做**色散**，边缘浮出一圈极淡彩边——
+  纯灰阶的玻璃看着就是塑料
+- **模糊半径不能一味调大**：折射要能被看见，背景必须留下可辨认的结构当参照物。
+  26dp 时一行小字、一条 1px 趋势线都已被糊成匀质底噪，采样点位移多少都没有对比，
+  真机上表现为「折射完全没生效」——实际是模糊把参照物抹掉了。14dp 是平衡点
+- **折射能不能被看见，还取决于玻璃的不透明度**：`alpha` 到 0.55 以上时背景已被压到
+  看不见，再大的位移也没有参照物（实测确实「完全看不出来」）。因此有真实 backdrop 时
+  取 **0.40**，取不到背景时才提到 0.94 保证图标可辨
+- **平台与 Compose 之间的桥**：Compose 1.12 的 `androidx.compose.ui.graphics` **没有**
+  `RuntimeShader`、没有 `createRuntimeShaderEffect`、也没有 `createChainedEffect`
+  （该模块只暴露 `createBlurEffect`）。因此折射用平台侧
+  `android.graphics.RuntimeShader`（API 33+）+ `RenderEffect.createRuntimeShaderEffect`，
+  链式用 **`createChainEffect(outer, inner)`**（不是 `createChainedEffect`；语义是 inner 先、outer 后，
+  要「先模糊再折射」就得 outer = 折射），最后用公开扩展 `asComposeRenderEffect()` 桥回
+  Compose 的 `RenderEffect`。**不能**用 `androidx.compose.ui.graphics.AndroidRenderEffect` 包装：
+  它字节码 public 但 Kotlin 侧 `internal`，跨模块调用直接编译失败。
+  任一步失败都返回 null 并退回纯模糊——API < 33 与 AGSL 编译失败都走这条退路
 - 底栏：Apple 风格悬浮胶囊，**只显示图标不显示文字**——四个一级页的图标语义已足够明确，
-  去掉文字后胶囊更窄、更少遮挡内容；选中项图标着品牌色并带浅色底
+  去掉文字后胶囊更窄、更少遮挡内容。选中块本身也是**一小块同材质玻璃**（主色淡染 +
+  斜向掠光 + 与外层共用「上亮下暗」描边），而不是一块纯色圆；切换时用两级弹簧叠加：
+  选中态放大 / 未选中收紧（`dampingRatio = 0.55` 留一点回弹）与按下下沉各管一件事
+- 图标在正下方 1dp 处先画一遍 30% 黑的自身，再画图标本体：直接压在玻璃上会「陷」进去，
+  因为它与玻璃之间没有厚度差
 - **设计令牌集中管理**（`ui/theme/OsTokens.kt`）：`OsColors` 保存浅/深两套配色，
   `OsText` 保存字号层级；配色以 `MiuixTheme.colorScheme.background` 的感知亮度自动判定深浅色，
   因此 Miuix 自带的 `Slider` / `Switch` 会自动采用同一套品牌色
@@ -321,6 +355,13 @@ top -b -n 1 -q -o %CPU,RES,PID,USER,S,ARGS
 - 页面切换用 `AnimatedContent` 交叉淡入淡出，判据取自动画参数而非闭包捕获的 state，
   避免过渡期间新旧页面串帧
 - 页面背景为中性浅灰 + 顶部极淡品牌色晕染，不使用大面积纯色
+- **1.5.0 新增「性能调度」二级页**：从「性能」页调优入口进入，统一控制
+  Uperf Game Turbo 与 A-SOUL Games Optimization 两个模块。
+  页面由 `UperfStatusCard` / `UperfModeCard` / `PerAppCard` / `AsoulCard` / `ServiceCard` 组成，
+  规则增删采用**卡内展开**而非弹窗——弹窗会遮住被参考的当前规则，
+  卡内展开能同时看到「正在改什么」和「改成了什么」。
+  选择应用用 `AppPicker`（`BasicTextField` 自带搜索），不要求用户手输包名。
+  详见第 11 节
 
 ### 10. 其他
 
@@ -343,6 +384,34 @@ top -b -n 1 -q -o %CPU,RES,PID,USER,S,ARGS
   LSPosed 会把它列为可激活模块，激活后毫无作用，对用户是误导，故不声明
 - 所有采集在 `Dispatchers.IO` 执行，UI 仅订阅 `StateFlow`，不阻塞主线程
 
+### 11. 性能调度：复用模块自己的配置文件，不另起一套控制通道
+
+「性能调度」页对接的是两个第三方 Magisk 模块，控制点全部落在**模块自己就在用的那份配置**上：
+
+| 目标 | 落点 | 依据 |
+|---|---|---|
+| Uperf 电源档位 | `Android/yc/uperf/cur_powermode.txt` | 该文件即 `uperf.json` 的 `switcher.switchInode`，uperf 守护进程用 inotify 监听它；模块自带 `script/powercfg_main.sh` 的**全部逻辑**也只是 `echo "$1" > 该文件` |
+| Uperf 分应用规则 | `Android/yc/uperf/perapp_powermode.txt` | `uperf.json` 的 `switcher.perapp` |
+| A-SOUL 全局与分游戏 | `/data/adb/naki/asopt.conf` | 模块 `customize.sh` 生成的同一份配置，`AsoulOpt` 启动时读取 |
+
+这样做的直接收益是：应用、模块自带的 WebUI、模块自身的脚本三者改的是同一份状态，
+不存在两套配置互相覆盖。**代价是档位取值必须来自模块源码而不是常识**——
+`powercfg_main.sh` 只认 `powersave / balance / performance / fast / auto`（外加 pedestal 对应的 `crazy`），
+凭常见调频器名字臆造会让状态文件写进去但 uperf 认不出来，表现为「点了按钮档位不变」的静默失败。
+
+**「重启服务」不能调用 `initsvc.sh`。** 模块的 `script/initsvc.sh` 里 `uperf_start()` 是
+`$BIN_PATH/uperf ...`——**前台执行、不后台化**，它会永久阻塞在守护进程上
+（Magisk 的 `service.sh` 本身是后台运行、允许阻塞的）。从 shell 同步调用它会挂死，
+并且会在已有实例之外**再拉起第二个 uperf**。因此本页的重启实现为
+「`killall uperf` → `setsid nohup` 分离重启」，等价于 `uperf_start` 去掉一次性的系统统一化步骤
+（inotify 上限、cgroup 归置在开机时已生效）。
+
+A-SOUL 侧则可以安全地直接调用模块的 `service.sh`：它最后一行是 `nohup ... &`，
+脚本会立即返回。仍额外加了 `[ -d /data/data/android ]` 前置判断，规避脚本内 `until` 等待循环在异常环境下死等。
+
+**读取用一次合并的 root 命令**（带 `##段名` 标记，一次 `su` 拿全部字段），
+而不是每个字段各起一次 `su`——后者在这类「进页面就刷新」的场景下会明显拖慢首屏。
+
 ---
 
 ## 三、工程结构
@@ -359,6 +428,7 @@ app/src/main/java/com/osplus/tools/
 │   ├── MemDataSource.kt         # 内存、SWAP、ZRAM、swappiness
 │   ├── BatteryDataSource.kt     # 电池信息 + ChargeController 充电控制
 │   ├── ProcessDataSource.kt     # root top 全量进程列表
+│   ├── PerfSchedDataSource.kt   # 性能调度：Uperf / A-SOUL 模块的配置读写与进程重启
 │   ├── PowerStatsDataSource.kt  # UsageStats 耗电估算
 │   ├── Preferences.kt           # SharedPreferences（悬浮窗位置 / 不透明度等）
 │   ├── FpsOverlayState.kt       # 悬浮窗开关与不透明度的跨层状态
@@ -383,6 +453,7 @@ app/src/main/java/com/osplus/tools/
 │       ├── SettingsScreen.kt        # 设置（二级页，概览页右上角进入）
 │       ├── PerfDetailScreens.kt     # 内存 / GPU / CPU 详情
 │       ├── ProcessDetailScreen.kt   # 进程管理
+│       ├── PerfSchedScreen.kt       # 性能调度（Uperf / A-SOUL 模块控制）
 │       └── PowerDetailScreen.kt     # 电源三个统计页签（由 PowerScreen 承载）
 ├── service/FpsOverlayService.kt # 跨应用帧率悬浮窗（轻点记录 / 长按拖动 / 可调不透明度）
 └── receiver/BootReceiver.kt
@@ -426,3 +497,6 @@ export JAVA_HOME="C:/Program Files/Amazon Corretto/jdk17.0.20_10"
 6. **ZRAM 容量调整会重建交换分区**（`reset` → `disksize` → `mkswap` → `swapon`），
    正在使用交换区的应用可能出现短暂卡顿。界面已给出明确警示，但仍建议在设备空闲时操作；
    部分机型内核不允许运行时改小 zram，此时写入会失败且不产生副作用。
+7. **性能调度页依赖第三方模块**。Uperf Game Turbo 与 A-SOUL Games Optimization
+   均为独立 Magisk 模块，未安装时对应卡片只显示「未检测到模块」，其余功能不受影响。
+   本页只读写这两个模块自己的配置文件与进程，不替代模块本身。

@@ -25,6 +25,12 @@ import com.osplus.tools.core.GpuDataSource
 import com.osplus.tools.core.LiveMetrics
 import com.osplus.tools.core.MemDataSource
 import com.osplus.tools.core.MemCleanResult
+import com.osplus.tools.core.AsoulGame
+import com.osplus.tools.core.AsoulState
+import com.osplus.tools.core.PerAppRule
+import com.osplus.tools.core.PerfSchedDataSource
+import com.osplus.tools.core.SchedResult
+import com.osplus.tools.core.UperfState
 import com.osplus.tools.core.PowerStatsDataSource
 import com.osplus.tools.core.Preferences
 import com.osplus.tools.core.ProcessDataSource
@@ -151,6 +157,8 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         FpsOverlayState.setAlpha(Preferences.overlayAlpha(context))
         viewModelScope.launch {
             _rootAvailable.value = Shell.isRootAvailable(force = true)
+            // 首屏就要在「性能调度」入口显示模块状态摘要，只多一次 root 调用
+            refreshPerfSched()
         }
         viewModelScope.launch {
             _usageAccess.value = PowerStatsDataSource.hasUsageAccess(context)
@@ -581,5 +589,78 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------------- 性能调度（Uperf / A-SOUL 模块） ----------------
+
+    private val _uperfState = MutableStateFlow(UperfState())
+    val uperfState: StateFlow<UperfState> = _uperfState.asStateFlow()
+
+    private val _asoulState = MutableStateFlow(AsoulState())
+    val asoulState: StateFlow<AsoulState> = _asoulState.asStateFlow()
+
+    /** 最近一次调度操作的回执；界面展示后调用 [clearSchedNotice] 收起 */
+    private val _schedNotice = MutableStateFlow<String?>(null)
+    val schedNotice: StateFlow<String?> = _schedNotice.asStateFlow()
+
+    private val _schedRefreshing = MutableStateFlow(false)
+    val schedRefreshing: StateFlow<Boolean> = _schedRefreshing.asStateFlow()
+
+    fun clearSchedNotice() {
+        _schedNotice.value = null
+    }
+
+    /** 读取两个模块的状态。进入调度页时调用，也可手动刷新 */
+    fun refreshPerfSched() {
+        viewModelScope.launch {
+            _schedRefreshing.value = true
+            val pair = runCatching { PerfSchedDataSource.read() }.getOrNull()
+            if (pair != null) {
+                _uperfState.value = pair.first
+                _asoulState.value = pair.second
+            }
+            _schedRefreshing.value = false
+        }
+    }
+
+    fun setUperfMode(mode: String) {
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { PerfSchedDataSource.setUperfMode(mode) }
+            _schedNotice.value = r.message
+            refreshPerfSched()
+        }
+    }
+
+    fun setUperfPerAppRules(rules: List<PerAppRule>) {
+        viewModelScope.launch {
+            _uperfState.value = _uperfState.value.copy(rules = rules)
+            val r = withContext(Dispatchers.IO) { PerfSchedDataSource.setUperfPerApp(rules) }
+            _schedNotice.value = r.message
+            refreshPerfSched()
+        }
+    }
+
+    fun restartUperf() {
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { PerfSchedDataSource.restartUperf() }
+            _schedNotice.value = r.message
+            refreshPerfSched()
+        }
+    }
+
+    fun setAsoulConfig(mode: String, rt: String, games: List<AsoulGame>) {
+        viewModelScope.launch {
+            _asoulState.value = _asoulState.value.copy(mode = mode, rt = rt, games = games)
+            val r = withContext(Dispatchers.IO) { PerfSchedDataSource.setAsoul(mode, rt, games) }
+            _schedNotice.value = r.message
+            refreshPerfSched()
+        }
+    }
+
+    fun restartAsoul() {
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { PerfSchedDataSource.restartAsoul() }
+            _schedNotice.value = r.message
+            refreshPerfSched()
+        }
+    }
 
 }

@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.osplus.tools.core.PerfSchedDataSource
 import com.osplus.tools.model.MetricSample
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.CoreBarsChart
@@ -62,7 +63,10 @@ private val WindowSeconds = listOf(5, 60, 300, 1800)
  * 想看瞬时抖动只能等重启，想看长趋势又要等半小时。窗口一旦可选，
  * 同一张图既承担「秒级抖动」也承担「半小时走势」，不再需要第二个页面。
  *
- * 进程摘要保持在最上方：它逐秒变化，是这一页最常被扫视的内容。
+ * 调优入口置于最上方：这一页真正需要用户「动手」的只有那四个入口
+ * （CPU / GPU / 内存 / 性能调度），而它们此前压在长趋势卡之后，
+ * 得先划过六张图才够得着。趋势是「看」的，入口是「做」的，做的排在看的上面。
+ * 进程摘要与趋势紧随其后，负责回答「谁在吃资源、变化趋势如何」。
  */
 @Composable
 fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
@@ -74,6 +78,7 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
     val processes by vm.processes.collectAsStateWithLifecycle()
     val appIcons by vm.appIcons.collectAsStateWithLifecycle()
+    val uperf by vm.uperfState.collectAsStateWithLifecycle()
     val c = osColors()
 
     // 默认 5 分：短到能看出抖动，长到不至于只剩噪声
@@ -110,7 +115,40 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
             item { NoticeBanner("未获取到 Root 权限，CPU 占用、GPU 与功耗等节点将不可读。") }
         }
 
-        // ---------- 进程摘要（置顶：点击进入进程管理）----------
+        // ---------- 调优入口（置顶：低频高危操作下沉为二级页）----------
+        item {
+            SectionCard {
+                TuningRow(
+                    label = "CPU 频率与调速器",
+                    summary = cpu.governors.firstOrNull { it.isNotBlank() } ?: "-",
+                    onClick = { onOpen(OverviewDetail.Cpu) },
+                )
+                Hairline(verticalPadding = 2.dp)
+                TuningRow(
+                    label = "GPU 频率与调速器",
+                    summary = gpu.governor.ifBlank { "-" },
+                    onClick = { onOpen(OverviewDetail.Gpu) },
+                )
+                Hairline(verticalPadding = 2.dp)
+                TuningRow(
+                    label = "内存与 ZRAM",
+                    summary = if (mem.zramTotalKb > 0) fmtGb(mem.zramTotalKb) else "未启用",
+                    onClick = { onOpen(OverviewDetail.Memory) },
+                )
+                Hairline(verticalPadding = 2.dp)
+                TuningRow(
+                    label = "性能调度",
+                    summary = when {
+                        !uperf.installed -> "未安装 Uperf"
+                        uperf.mode.isBlank() -> "Uperf 已安装"
+                        else -> "Uperf · " + PerfSchedDataSource.uperfModeLabel(uperf.mode)
+                    },
+                    onClick = { onOpen(OverviewDetail.Sched) },
+                )
+            }
+        }
+
+        // ---------- 进程摘要（点击进入进程管理）----------
         item {
             SectionCard(onClick = { onOpen(OverviewDetail.Process) }) {
                 if (topProcesses.isEmpty()) {
@@ -245,29 +283,6 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                         )
                     }
                 }
-            }
-        }
-
-        // ---------- 调优入口（低频高危操作下沉为二级页）----------
-        item {
-            SectionCard {
-                TuningRow(
-                    label = "CPU 频率与调速器",
-                    summary = cpu.governors.firstOrNull { it.isNotBlank() } ?: "-",
-                    onClick = { onOpen(OverviewDetail.Cpu) },
-                )
-                Hairline(verticalPadding = 2.dp)
-                TuningRow(
-                    label = "GPU 频率与调速器",
-                    summary = gpu.governor.ifBlank { "-" },
-                    onClick = { onOpen(OverviewDetail.Gpu) },
-                )
-                Hairline(verticalPadding = 2.dp)
-                TuningRow(
-                    label = "内存与 ZRAM",
-                    summary = if (mem.zramTotalKb > 0) fmtGb(mem.zramTotalKb) else "未启用",
-                    onClick = { onOpen(OverviewDetail.Memory) },
-                )
             }
         }
     }

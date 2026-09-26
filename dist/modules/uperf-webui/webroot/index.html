@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <title>Uperf Game Turbo · 控制面板</title>
+    <link rel="stylesheet" href="/internal/insets.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ 顶栏 ============ -->
+<div class="top">
+    <div class="top-logo">UP</div>
+    <div class="top-meta">
+        <div class="top-title" id="modName">Uperf Game Turbo</div>
+        <div class="top-sub">
+            <span id="modVersion">控制面板</span>
+            &nbsp;·&nbsp; 基于 uperf 0904
+        </div>
+    </div>
+    <button class="icon-btn" id="btnTheme" title="切换主题">◐</button>
+    <button class="icon-btn" id="btnRefresh" title="刷新">⟳</button>
+</div>
+
+<!-- ============ 环境提示 ============ -->
+<div id="envBanner" class="hidden"></div>
+
+<!-- ============ 守护进程状态 ============ -->
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">守护进程</div>
+        <div class="card-hint" style="margin-left:auto">
+            <span class="pill" id="daemonPill">检测中…</span>
+        </div>
+    </div>
+    <div class="kv">
+        <div class="kv-row">
+            <div class="kv-k">平台配置</div>
+            <div class="kv-v" id="infoSoc">—</div>
+        </div>
+        <div class="kv-row">
+            <div class="kv-k">当前电源模式</div>
+            <div class="kv-v" id="infoMode">—</div>
+        </div>
+        <div class="kv-row">
+            <div class="kv-k">分应用规则</div>
+            <div class="kv-v" id="infoRules">—</div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ 电源模式 ============ -->
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">电源模式</div>
+        <div class="card-hint" id="modeNow">—</div>
+    </div>
+    <div class="mode-grid" id="modeGrid"></div>
+    <div class="card-note">
+        切换即时生效，无需重启。写入目标为 uperf 监听的
+        <code>cur_powermode.txt</code>，与模块自带 <code>powercfg_main.sh</code> 行为一致。
+        极速 / 疯狂档会显著提升发热，请自行确认散热条件。
+    </div>
+</div>
+
+<!-- ============ 分应用规则 ============ -->
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">分应用模式</div>
+        <div class="card-hint">前台命中即切换</div>
+    </div>
+    <div class="rules" id="ruleList"></div>
+    <div class="row-actions">
+        <button class="btn primary" id="btnAdd">＋ 添加应用</button>
+    </div>
+    <div class="card-note">
+        <b>*</b> 为默认规则（未命中的应用），<b>-</b> 为息屏规则。修改后立即写回
+        <code>perapp_powermode.txt</code>，切换应用时生效。
+    </div>
+</div>
+
+<!-- ============ 运行日志 ============ -->
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">运行日志</div>
+        <div class="card-hint">末 150 行</div>
+    </div>
+    <pre class="log" id="logView">尚未读取</pre>
+    <div class="row-actions">
+        <button class="btn ghost" id="btnLog">重新读取日志</button>
+    </div>
+</div>
+
+<!-- ============ 底部操作 ============ -->
+<div class="dock">
+    <button class="btn ghost" id="btnReload">重启 uperf 进程</button>
+</div>
+
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

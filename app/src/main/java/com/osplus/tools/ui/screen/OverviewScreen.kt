@@ -49,6 +49,7 @@ enum class OverviewDetail(val title: String) {
     Gpu("GPU"),
     Cpu("CPU"),
     Process("进程"),
+    Sched("性能调度"),
 }
 
 /**

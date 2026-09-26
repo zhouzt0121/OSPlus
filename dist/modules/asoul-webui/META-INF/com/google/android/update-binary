@@ -1,0 +1,10 @@
+OUTFD=$2
+ZIPFILE=$3
+umask 022
+
+. /data/adb/magisk/util_functions.sh
+if [ ! -f /data/adb/magisk/util_functions.sh ] || [ $MAGISK_VER_CODE -le 20400 ]; then
+    echo - Please install Magisk v20.4+!
+    exit 1
+fi
+install_module

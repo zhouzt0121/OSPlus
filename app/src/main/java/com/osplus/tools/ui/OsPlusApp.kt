@@ -41,6 +41,7 @@ import com.osplus.tools.ui.screen.MemDetailScreen
 import com.osplus.tools.ui.screen.OverviewDetail
 import com.osplus.tools.ui.screen.OverviewScreen
 import com.osplus.tools.ui.screen.PerfScreen
+import com.osplus.tools.ui.screen.PerfSchedScreen
 import com.osplus.tools.ui.screen.PowerScreen
 import com.osplus.tools.ui.screen.ProcessDetailScreen
 import com.osplus.tools.ui.screen.SettingsScreen
@@ -199,6 +200,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                         OverviewDetail.Gpu -> GpuDetailScreen(viewModel)
                                         OverviewDetail.Cpu -> CpuDetailScreen(viewModel)
                                         OverviewDetail.Process -> ProcessDetailScreen(viewModel)
+                                        OverviewDetail.Sched -> PerfSchedScreen(viewModel)
                                     }
 
                                     keyTab == RootTab.Overview -> OverviewScreen(

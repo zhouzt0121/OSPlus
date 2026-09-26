@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <title>A-SOUL Games Optimization · 控制面板</title>
+    <link rel="stylesheet" href="/internal/insets.css">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ 顶栏 ============ -->
+<div class="top">
+    <div class="top-logo">AS</div>
+    <div class="top-meta">
+        <div class="top-title" id="modName">A-SOUL Games Optimization</div>
+        <div class="top-sub">
+            <span id="modVersion">控制面板</span>
+            &nbsp;·&nbsp; Game threads tweaker
+        </div>
+    </div>
+    <button class="icon-btn" id="btnTheme" title="切换主题">◐</button>
+    <button class="icon-btn" id="btnRefresh" title="刷新">⟳</button>
+</div>
+
+<!-- ============ 环境提示 ============ -->
+<div id="envBanner" class="hidden"></div>
+
+<!-- ============ 守护进程 ============ -->
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">守护进程</div>
+        <div class="card-hint" style="margin-left:auto">
+            <span class="pill" id="daemonPill">检测中…</span>
+        </div>
+    </div>
+    <div class="kv">
+        <div class="kv-row">
+            <div class="kv-k">配置文件</div>
+            <div class="kv-v" id="confPath">—</div>
+        </div>
+        <div class="kv-row">
+            <div class="kv-k">配置状态</div>
+            <div class="kv-v"><span class="pill" id="confState">—</span></div>
+        </div>
+        <div class="kv-row">
+            <div class="kv-k">分游戏规则</div>
+            <div class="kv-v" id="gameCount">—</div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ 全局运行模式 ============ -->
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">运行模式</div>
+        <div class="card-hint" id="modeNow">—</div>
+    </div>
+    <div class="mode-grid" id="modeGrid"></div>
+    <div class="card-note">
+        决定 AsoulOpt 如何摆放游戏线程。硬亲和把线程固定在指定核心上，理论上表现更好；
+        软迁移 / 硬迁移允许或强制线程迁移，帧率可能更稳定。修改会写入
+        <code>asopt.conf</code> 并重启 AsoulOpt。
+    </div>
+</div>
+
+<!-- ============ 实时模式 ============ -->
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">实时模式</div>
+        <div class="card-hint" id="rtNow">—</div>
+    </div>
+    <div class="mode-grid" id="rtGrid"></div>
+    <div class="card-note">
+        开启后游戏线程使用实时调度策略，可能更流畅，但存在卡死风险，建议仅在确认稳定的机型上使用。
+    </div>
+</div>
+
+<!-- ============ 分游戏规则 ============ -->
+<div class="card">
+    <div class="card-head">
+        <div class="card-title">分游戏覆盖</div>
+        <div class="card-hint">未匹配则用全局值</div>
+    </div>
+    <div class="rules" id="gameList"></div>
+    <div class="row-actions">
+        <button class="btn primary" id="btnAdd">＋ 添加游戏</button>
+    </div>
+    <div class="card-note">
+        格式为「包名 模式 实时」。保存后即时应用，<b>切换游戏时生效</b>。
+    </div>
+</div>
+
+<!-- ============ 底部操作 ============ -->
+<div class="dock">
+    <button class="btn ghost" id="btnReset">恢复默认</button>
+    <button class="btn primary" id="btnRestart">重启 AsoulOpt</button>
+</div>
+
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

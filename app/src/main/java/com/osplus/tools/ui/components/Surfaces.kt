@@ -21,11 +21,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.osplus.tools.ui.theme.osColors
@@ -38,10 +42,25 @@ val CardRadius = 18.dp
  *
  * 不用默认水波纹（本工程未引入 Material 主题，回退观感偏灰），
  * 改为整体轻微淡出，与卡片式的静态界面更协调。
+ *
+ * 带 [interactionSource] 的重载供调用方读取按压状态。拆成两个重载而不是给
+ * [interactionSource] 加默认值，是因为 Kotlin 的尾随 lambda 绑定的是**最后一个**参数：
+ * 若签名写成 `pressable(onClick, interactionSource = null)`，那么既有的
+ * `pressable { ... }` 会把 lambda 塞给 `interactionSource` 而直接编译失败。
+ * 让双参重载不带默认值，`pressable { }` 与 `pressable(onClick)` 就都只会匹配单参重载。
+ *
+ * @param interactionSource 传入后调用方可用 `collectIsPressedAsState()` 读取按压状态
+ *   （例如做按压缩放）；传 null 时内部自建一个。
  */
 @Composable
-fun Modifier.pressable(onClick: () -> Unit): Modifier {
-    val interaction = remember { MutableInteractionSource() }
+fun Modifier.pressable(
+    interactionSource: MutableInteractionSource?,
+    onClick: () -> Unit,
+): Modifier {
+    // 兜底 source 无条件 remember：若写成 `interactionSource ?: remember { ... }`，
+    // 一旦调用方在两次组合之间切换了传/不传，remember 就会变成条件调用。
+    val fallback = remember { MutableInteractionSource() }
+    val interaction = interactionSource ?: fallback
     val pressed by interaction.collectIsPressedAsState()
     val alpha by animateFloatAsState(
         targetValue = if (pressed) 0.62f else 1f,
@@ -51,6 +70,11 @@ fun Modifier.pressable(onClick: () -> Unit): Modifier {
         .alpha(alpha)
         .clickable(interactionSource = interaction, indication = null, onClick = onClick)
 }
+
+/** 单参重载：不需要读取按压状态时用这个，[interactionSource] 由内部自建。 */
+@Composable
+fun Modifier.pressable(onClick: () -> Unit): Modifier =
+    pressable(interactionSource = null, onClick = onClick)
 
 /**
  * 卡片表面：白底 + 发丝描边 + 极轻投影。
@@ -91,24 +115,42 @@ fun Modifier.osTile(
  * - `liquidGlass` 只给**悬浮在内容之上的导航类控件**用，要的是**透光层次**——
  *   内容从下方滚过时能被隐约看见，控件因此「浮」起来而不是「贴」在页面上。
  *
- * 四层叠加模拟玻璃：
- * 1. 半透明着色层（叠在 [Modifier.drawBackdrop] 的真实背景模糊之上）
- * 2. 竖向顶光渐变：上缘亮、中部透明、下缘回一点反光，模拟光从上方掠过玻璃
- * 3. 线性渐变描边：左上最亮 → 中部最暗 → 右下回升，形成一圈被光照到的「棱」
- * 4. 大而软的投影，把玻璃从背景中托起
+ * 五层叠加模拟玻璃（模糊与折射由 [Modifier.drawBackdrop] 在更下层完成，不在这里）：
+ * 1. 半透明着色层（叠在模糊 + 折射之后）
+ * 2. 竖向掠光：上缘最亮 → 快速衰减 → 中段透明 → 下缘回一点反光。
+ *    多给一个 0.14f 的中间停靠点是为了让高光**集中在顶缘一小条**上，
+ *    而不是从顶部一路渐变下来——后者看起来是塑料反光，前者才是玻璃。
+ * 3. **非均匀描边**：上缘白、中段透明、下缘暗。
+ *    这是玻璃「厚度」的来源，也是最容易被做错的一层：四周等亮的描边
+ *    只能画出一条塑料边框，而真实玻璃的上棱受光、下棱背光。
+ * 4. **内高光**：在轮廓内侧 1.6dp 处再描一圈极淡的白，只在上缘可见。
+ *    光穿过玻璃后会在内壁反射一次，这一圈内反射是「一块平板」与
+ *    「一块实体」之间的分界。少了它，玻璃看着就是贴在屏上的一张色纸。
+ * 5. 大而软的投影，把玻璃从背景中托起
+ *
+ * ### 关于 [alpha]：这是折射能否被看见的前提
+ *
+ * 玻璃盖得越实，背景越暗，折射位移就越没有参照物。
+ * 实测 `alpha` 到 0.55 以上时，[com.osplus.tools.ui.components.buildLiquidGlassEffect]
+ * 的位移在真机上**完全看不出来**——不是着色器没生效，而是背景已经被压到看不见了。
+ * 因此有真实 backdrop 时取 0.40 附近；取不到背景时才提到 0.9 以上保证图标可辨。
  *
  * 深色主题下白色高光的 alpha 大幅降低，否则玻璃会发白发灰、压不住底色。
+ *
+ * @param cornerRadius 与 [shape] 的圆角保持一致；用于把内高光按轮廓内缩，
+ *   做成参数而不是从 [shape] 反解，是因为 [Shape] 是任意接口，无法安全取半径。
  */
 @Composable
 fun Modifier.liquidGlass(
     shape: Shape = RoundedCornerShape(30.dp),
-    alpha: Float = 0.58f,
+    alpha: Float = 0.40f,
     elevation: Dp = 18.dp,
-    borderAlpha: Float = 0.34f,
+    cornerRadius: Dp = 30.dp,
 ): Modifier {
     val c = osColors()
-    val sheenTop = if (c.isDark) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.60f)
-    val sheenBottom = if (c.isDark) Color.White.copy(alpha = 0.02f) else Color.White.copy(alpha = 0.08f)
+    val sheenTop = if (c.isDark) Color.White.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.40f)
+    val sheenBottom = if (c.isDark) Color.White.copy(alpha = 0.02f) else Color.White.copy(alpha = 0.06f)
+    val innerHighlight = if (c.isDark) 0.10f else 0.22f
 
     return this
         .shadow(elevation, shape, clip = false)
@@ -117,17 +159,43 @@ fun Modifier.liquidGlass(
         .background(
             Brush.verticalGradient(
                 0f to sheenTop,
-                0.5f to Color.Transparent,
+                0.14f to Color.White.copy(alpha = if (c.isDark) 0.03f else 0.10f),
+                0.46f to Color.Transparent,
+                0.86f to Color.Transparent,
                 1f to sheenBottom,
             )
         )
+        .drawWithContent {
+            drawContent()
+            // 内高光描边。用 drawWithContent 而不是再套一个 border：
+            // border 永远贴在轮廓上，而这一圈必须**内缩**，才能与第 3 层的外描边
+            // 拉开距离、形成「棱 + 壁」的两级结构。
+            val inset = 1.6.dp.toPx()
+            val w = size.width - inset * 2f
+            val h = size.height - inset * 2f
+            if (w > 0f && h > 0f) {
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        0f to Color.White.copy(alpha = innerHighlight),
+                        0.42f to Color.Transparent,
+                        1f to Color.Transparent,
+                    ),
+                    topLeft = Offset(inset, inset),
+                    size = Size(w, h),
+                    cornerRadius = CornerRadius((cornerRadius - 1.6.dp).toPx().coerceAtLeast(0f)),
+                    style = Stroke(width = 1.dp.toPx()),
+                )
+            }
+        }
         .border(
-            width = 0.8.dp,
-            brush = Brush.linearGradient(
+            width = 1.2.dp,
+            // 上亮下暗：受光的顶棱与背光的底棱，这一圈才是「厚度」
+            brush = Brush.verticalGradient(
                 listOf(
-                    Color.White.copy(alpha = (borderAlpha + 0.26f).coerceAtMost(1f)),
-                    Color.White.copy(alpha = borderAlpha * 0.25f),
-                    Color.White.copy(alpha = borderAlpha),
+                    Color.White.copy(alpha = if (c.isDark) 0.26f else 0.72f),
+                    Color.Transparent,
+                    Color.Transparent,
+                    Color.Black.copy(alpha = if (c.isDark) 0.16f else 0.14f),
                 )
             ),
             shape = shape,
