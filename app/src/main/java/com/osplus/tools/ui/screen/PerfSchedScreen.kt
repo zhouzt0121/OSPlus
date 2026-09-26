@@ -41,6 +41,7 @@ import com.osplus.tools.ui.components.Hairline
 import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
+import com.osplus.tools.ui.components.glassSurface
 import com.osplus.tools.ui.components.pressable
 import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
@@ -558,9 +559,16 @@ private fun ActionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            // 行内动作原本没有任何底色，只有一圈点击区；
+            // 换成玻璃表面后它才是一个「看得见的按钮」，而不是一段可点的文字
+            .glassSurface(
+                shape = RoundedCornerShape(10.dp),
+                cornerRadius = 10.dp,
+                body = c.cardAlt,
+                elevation = 1.dp,
+            )
             .then(if (enabled) Modifier.pressable(onClick) else Modifier)
-            .padding(vertical = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(

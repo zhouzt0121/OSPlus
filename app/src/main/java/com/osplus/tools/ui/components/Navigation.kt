@@ -346,9 +346,12 @@ fun OsTopBarAction(
     Box(
         modifier = modifier
             .size(TopBarActionSize)
-            .clip(CircleShape)
-            .background(c.cardAlt)
-            .border(0.7.dp, c.hairline, CircleShape)
+            .glassSurface(
+                shape = CircleShape,
+                cornerRadius = TopBarActionSize / 2,
+                body = c.cardAlt,
+                elevation = 2.dp,
+            )
             .then(if (enabled) Modifier.pressable(onClick) else Modifier)
             .alpha(if (enabled) 1f else 0.4f),
         contentAlignment = Alignment.Center,
