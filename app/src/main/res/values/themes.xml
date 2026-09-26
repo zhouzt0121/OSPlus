@@ -5,8 +5,18 @@
         <item name="android:windowContentOverlay">@null</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowTranslucentStatus">true</item>
-        <item name="android:windowTranslucentNavigation">true</item>
+        <!--
+            这里**不能**再写 windowTranslucentStatus / windowTranslucentNavigation。
+
+            这两个属性是 edge-to-edge 之前的旧做法：它们让系统在状态栏区域叠一层
+            半透明遮罩，并把窗口内容向内缩让开系统栏。而 enableEdgeToEdge() 做的是
+            完全相反的事——把内容铺到系统栏下面。两者同时存在时后者被废掉，
+            结果是状态栏区域露在窗口之外、显示为一条与页面硬边相接的灰带
+            （实测 rgb(131,135,144)，而页面是 rgb(240,244,250)）。
+
+            透明背景交给上面两行 statusBarColor / navigationBarColor，
+            图标明暗交给 enableEdgeToEdge() 的 scrim 参数。
+        -->
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:enforceStatusBarContrast">false</item>

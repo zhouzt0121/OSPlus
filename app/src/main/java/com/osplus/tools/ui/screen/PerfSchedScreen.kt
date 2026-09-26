@@ -536,7 +536,24 @@ private fun RuleRow(
         }
 
         if (expanded) {
-            Box(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+            // 展开的面板是一块**凹进去**的玻璃：elevation = 0，不加投影。
+            // 它是从行内「沉」下去的一块，不是浮起来的一张卡——
+            // 凹槽与凸片是同一块玻璃的两种受力状态，这条规则和分段控件保持一致。
+            //
+            // 用静态光学而非实时折射：它内联在卡片内部，背后就是卡片本身，
+            // 折射一片纯色卡片得到的还是纯色，白付性能。
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+                    .glassSurface(
+                        shape = RoundedCornerShape(12.dp),
+                        cornerRadius = 12.dp,
+                        body = c.cardAlt,
+                        concave = true,
+                    )
+                    .padding(10.dp)
+            ) {
                 ChipGrid(
                     options = options,
                     selected = selectedMode,

@@ -234,28 +234,53 @@ fun Modifier.glassSurface(
     cornerRadius: Dp,
     body: Color,
     elevation: Dp = 3.dp,
+    concave: Boolean = false,
 ): Modifier {
     val c = osColors()
     val dark = c.isDark
     val radiusPx = with(LocalDensity.current) { cornerRadius.toPx() }
 
-    // 顶光集中在顶缘一小条，中段压到接近透明——一路渐变下来是塑料反光，不是玻璃
-    val sheenTop = Color.White.copy(alpha = if (dark) 0.10f else 0.32f)
-    val sheenBottom = Color.White.copy(alpha = if (dark) 0.02f else 0.05f)
-    // 外棱：受光的顶棱亮、背光的底棱暗，这一圈才是「厚度」
-    val edgeTop = Color.White.copy(alpha = if (dark) 0.22f else 0.58f)
-    val edgeBottom = Color.Black.copy(alpha = if (dark) 0.26f else 0.13f)
-    val innerRing = Color.White.copy(alpha = if (dark) 0.07f else 0.13f)
+    // 凸 / 凹的差别不在颜色深浅，而在**受光面的位置**：
+    //   凸玻璃光落在顶面 → 顶棱亮、底棱暗，顶缘一道掠光；
+    //   凹玻璃光落进坑里 → 明暗整体反转，顶部内壁反而形成内阴影。
+    // 只把颜色调浅做不出凹陷感——这正是分段控件曾经「像贴了张不干胶」的原因。
+    //
+    // 凸：顶光集中在顶缘一小条，中段压到接近透明（一路渐变下来是塑料反光）
+    val sheenTop = if (concave) {
+        Color.White.copy(alpha = if (dark) 0.02f else 0.03f)
+    } else {
+        Color.White.copy(alpha = if (dark) 0.10f else 0.32f)
+    }
+    val sheenBottom = if (concave) {
+        Color.White.copy(alpha = if (dark) 0.05f else 0.13f)
+    } else {
+        Color.White.copy(alpha = if (dark) 0.02f else 0.05f)
+    }
+    val edgeTop = if (concave) {
+        Color.Black.copy(alpha = if (dark) 0.32f else 0.15f)
+    } else {
+        Color.White.copy(alpha = if (dark) 0.22f else 0.58f)
+    }
+    val edgeBottom = if (concave) {
+        Color.White.copy(alpha = if (dark) 0.10f else 0.34f)
+    } else {
+        Color.Black.copy(alpha = if (dark) 0.26f else 0.13f)
+    }
+    val innerRing = if (concave) {
+        Color.Black.copy(alpha = if (dark) 0.12f else 0.07f)
+    } else {
+        Color.White.copy(alpha = if (dark) 0.07f else 0.13f)
+    }
 
-    return this
-        .shadow(elevation, shape, clip = false)
+    // 凹玻璃不加外投影：它是从表面「沉」下去的，不是浮起来的
+    return (if (concave) this else this.shadow(elevation, shape, clip = false))
         .clip(shape)
         .drawWithContent {
             val cr = CornerRadius(radiusPx)
 
             // 玻璃体
             drawRoundRect(color = body, cornerRadius = cr)
-            // 顶光
+            // 顶光（凸）／底光（凹）
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     0.0f to sheenTop,
@@ -264,15 +289,34 @@ fun Modifier.glassSurface(
                 ),
                 cornerRadius = cr,
             )
+            if (concave) {
+                // 内阴影：光进不到坑底，顶部内壁压一道柔和的暗带。
+                // 1px 描边做不出「凹」的体量感——它只能勾出一条线，
+                // 而凹陷感来自**有宽度的明暗过渡**。
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        0.0f to Color.Black.copy(alpha = if (dark) 0.16f else 0.09f),
+                        0.32f to Color.Transparent,
+                    ),
+                    cornerRadius = cr,
+                )
+            }
 
             drawContent()
 
             val stroke = 1.dp.toPx()
 
-            // 外棱
+            // 外棱：沿**光源方向**渐变，而不是单纯的上下。
+            // 单侧打光（左上）才是真实玻璃：左上棱最亮、右下棱最暗。
+            // 纯上下渐变会让左右两条竖棱取到同一个中间值，四条棱的亮度关系不成立，
+            // 看起来就像「描了一圈边」而不是一块受光的板。
             drawRoundRect(
-                brush = Brush.verticalGradient(
-                    listOf(edgeTop, Color.Transparent, edgeBottom)
+                brush = Brush.linearGradient(
+                    0.00f to edgeTop,
+                    0.42f to Color.Transparent,
+                    1.00f to edgeBottom,
+                    start = Offset.Zero,
+                    end = Offset(size.width, size.height),
                 ),
                 cornerRadius = cr,
                 size = size,

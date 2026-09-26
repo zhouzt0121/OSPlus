@@ -2,10 +2,14 @@ package com.osplus.tools
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.content.res.Resources
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,7 +31,32 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // 显式传透明 scrim，**不要用 enableEdgeToEdge() 的默认值**。
+        //
+        // 默认实现会按系统深色模式挑一层遮罩（浅色 ~90% 白、深色 ~50% 黑），
+        // 叠在状态栏上。我们的主题跟随系统没问题，但遮罩一旦叠上去，
+        // 状态栏区域就会与下方页面之间出现一条硬边的色带——
+        // 实测该处为 rgb(130,134,143)，而页面是 rgb(238,242,248)，
+        // 视觉上就是顶上糊了一条灰胶带。
+        //
+        // 两个 scrim 都传 TRANSPARENT，让状态栏彻底透明、由页面背景自己铺满。
+        // 图标明暗单独用 detectDarkMode 决定，与主题保持同一判据。
+        val detectDarkMode: (Resources) -> Boolean = { res ->
+            (res.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+        }
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.auto(
+                Color.TRANSPARENT,
+                Color.TRANSPARENT,
+                detectDarkMode,
+            ),
+            navigationBarStyle = SystemBarStyle.auto(
+                Color.TRANSPARENT,
+                Color.TRANSPARENT,
+                detectDarkMode,
+            ),
+        )
         requestHighestRefreshRate()
         requestNotificationPermissionIfNeeded()
         setContent {
