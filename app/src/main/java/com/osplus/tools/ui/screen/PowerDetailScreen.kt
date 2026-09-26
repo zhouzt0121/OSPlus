@@ -27,12 +27,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.ChargeController
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
+import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.MetricChartCard
 import com.osplus.tools.ui.components.NoticeBanner
@@ -131,7 +133,7 @@ private fun PowerUsageTab(vm: DeviceViewModel) {
         }
         items(entries.take(60)) { entry ->
             SectionCard {
-                Column(Modifier.padding(vertical = 3.dp)) {
+                Column(Modifier.padding(vertical = 1.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         val icon = icons[entry.packageName]
                         if (icon != null) {
@@ -139,8 +141,8 @@ private fun PowerUsageTab(vm: DeviceViewModel) {
                                 bitmap = icon,
                                 contentDescription = null,
                                 modifier = Modifier
-                                    .size(30.dp)
-                                    .clip(RoundedCornerShape(9.dp)),
+                                    .size(28.dp)
+                                    .clip(RoundedCornerShape(8.dp)),
                             )
                             Spacer(Modifier.width(10.dp))
                         }
@@ -149,24 +151,36 @@ private fun PowerUsageTab(vm: DeviceViewModel) {
                             style = MiuixTheme.textStyles.body2,
                             color = MiuixTheme.colorScheme.onBackground,
                             modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
+                        Spacer(Modifier.width(8.dp))
                         Text(
+                            // 用主色而不是红色。
+                            //
+                            // 红色在这套配色里的语义是「异常」——温度过高、内存吃紧、
+                            // 写入失败都用它。耗电占比只是一个中性读数：
+                            // 抖音占 17% 不代表出了问题，只代表它用得多。
+                            // 整页十几个红数字并排时，观感像在报故障，而不是在汇报用量。
                             text = "%.1f%%".format(entry.percent),
                             style = MiuixTheme.textStyles.title4,
-                            color = ChartColors.power,
+                            color = osColors().primary,
                         )
                     }
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(5.dp))
                     UsageBar(
                         fraction = entry.percent / 100f,
-                        color = ChartColors.power,
-                        barHeight = 6.dp,
+                        color = osColors().primary,
+                        barHeight = 5.dp,
                     )
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(5.dp))
                     Text(
-                        text = "前台 ${formatDuration(entry.foregroundMs)} · 可见 ${
+                        // 包名（com.coolapk.market）是排查用的技术信息，不是给用户看的。
+                        // 它挤在同一行里把真正有用的时长读数推到看不见，
+                        // 而且每个条目都重复一遍包名，整列都是噪音。
+                        text = "前台 ${formatDuration(entry.foregroundMs)} · 后台 ${
                             formatDuration(entry.backgroundMs)
-                        } · ${entry.packageName}",
+                        }",
                         style = MiuixTheme.textStyles.footnote2,
                         color = MiuixTheme.colorScheme.onBackgroundVariant,
                         maxLines = 1,

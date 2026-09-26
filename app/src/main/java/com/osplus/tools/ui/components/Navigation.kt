@@ -10,6 +10,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -40,6 +41,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -106,7 +108,13 @@ fun OsFloatingBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 64.dp, vertical = 12.dp),
+            // 左右内缩从 64dp 收到 20dp。
+            // 64dp 是「纯图标」时代的取值——那时条目只有 44dp 宽的圆，
+            // 条太宽会让四个圆之间空出大片死区，所以刻意收窄。
+            // 加上文字标签后条目变宽，再把整条收窄就会挤在一起；
+            // 放宽到 20dp 既让玻璃面积更大（折射与高光都更明显），
+            // 又给标签留出了足够宽度。
+            .padding(horizontal = 20.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
         Row(
@@ -140,7 +148,7 @@ fun OsFloatingBottomBar(
                     // 否则没有底色的玻璃会让图标糊在页面内容上。
                     alpha = if (backdrop != null) 0.40f else 0.94f,
                 )
-                .padding(horizontal = 7.dp, vertical = 7.dp),
+                .padding(horizontal = 8.dp, vertical = 9.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -182,35 +190,38 @@ private fun FloatingBarItem(
     // 前者管「切换到了哪个」，后者管「手指按在哪」。
     // dampingRatio < 1（欠阻尼）是为了留一点回弹——规格书里的「动态形变」
     // 在这么小的控件上，就体现在这几分之一秒的过冲里。
-    val selectScale by animateFloatAsState(
-        targetValue = if (selected) 1f else 0.90f,
-        animationSpec = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMediumLow),
-        label = "barSelectScale",
-    )
+    // 选中态用一个**横向胶囊**包住「图标 + 文字」，而不是一个 44dp 的大圆。
+    // 圆形只包得住图标，于是文字没有归属、选中感被切在圆外；
+    // 胶囊把两者圈在一起，选中态才是一个完整的单元。
+    val pillShape = RoundedCornerShape(16.dp)
     val pressScale by animateFloatAsState(
-        targetValue = if (pressed) 0.88f else 1f,
+        targetValue = if (pressed) 0.93f else 1f,
         animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
         label = "barPressScale",
     )
 
     Box(
-        modifier = modifier.padding(vertical = 2.dp),
+        modifier = modifier.padding(horizontal = 2.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Box(
+        Column(
             modifier = Modifier
-                .size(44.dp)
-                .scale(selectScale * pressScale)
+                .fillMaxWidth()
+                .scale(pressScale)
                 .then(
                     if (tint > 0.01f) {
                         Modifier
-                            .shadow(6.dp * tint, CircleShape, clip = false)
-                            .clip(CircleShape)
+                            // 投影从 5dp 收到 3dp、主色透明度从 0.19 压到 0.15：
+                            // 胶囊原本几乎占满整条玻璃的高度，加上深投影后像一块实心砖，
+                            // 把底栏的玻璃质感整个盖掉了。选中态应该是「浮在玻璃上的一层色」，
+                            // 不是「嵌进玻璃里的一块砖」。
+                            .shadow(3.dp * tint, pillShape, clip = false)
+                            .clip(pillShape)
                             .background(
                                 Brush.linearGradient(
                                     listOf(
-                                        c.primary.copy(alpha = tint * (if (c.isDark) 0.36f else 0.20f)),
-                                        c.primary.copy(alpha = tint * (if (c.isDark) 0.20f else 0.10f)),
+                                        c.primary.copy(alpha = tint * (if (c.isDark) 0.30f else 0.15f)),
+                                        c.primary.copy(alpha = tint * (if (c.isDark) 0.15f else 0.07f)),
                                     )
                                 )
                             )
@@ -225,14 +236,15 @@ private fun FloatingBarItem(
                                         c.primary.copy(alpha = tint * 0.20f),
                                     )
                                 ),
-                                shape = CircleShape,
+                                shape = pillShape,
                             )
                     } else {
                         Modifier
                     }
                 )
-                .pressable(interactionSource = interaction, onClick = onClick),
-            contentAlignment = Alignment.Center,
+                .pressable(interactionSource = interaction, onClick = onClick)
+                .padding(vertical = 7.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // 图标垫一层下移的软阴影：直接压在玻璃上会「陷」进去，
             // 因为它与玻璃之间没有厚度差。在正下方 1dp 处先画一遍
@@ -244,7 +256,7 @@ private fun FloatingBarItem(
                 contentDescription = item.label,
                 tint = contentColor,
                 modifier = Modifier
-                    .size(23.dp)
+                    .size(22.dp)
                     .drawWithContent {
                         val iconSize = size
                         translate(top = iconShadowOffset) {
@@ -258,6 +270,20 @@ private fun FloatingBarItem(
                         }
                         drawContent()
                     },
+            )
+            Spacer(Modifier.height(3.dp))
+            // 文字标签。
+            //
+            // 之前是纯图标，理由是「四个页面的图标本身已能区分」——但那是设计者视角：
+            // 用户第一次打开时并不知道那个「折线」是帧率、「电池」是电源，
+            // 只能逐个点开试。加上标签后导航从「靠猜」变成「可读」，
+            // 代价只是底栏高约 12dp。
+            Text(
+                text = item.label,
+                style = OsText.micro,
+                color = contentColor,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
             )
         }
     }

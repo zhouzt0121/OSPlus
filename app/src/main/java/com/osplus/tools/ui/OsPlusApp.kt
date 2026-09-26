@@ -9,14 +9,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.ShowChart
-import androidx.compose.material.icons.rounded.BatteryFull
+import androidx.compose.material.icons.automirrored.filled.ShowChart
+import androidx.compose.material.icons.filled.BatteryFull
+import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.rounded.CleaningServices
-import androidx.compose.material.icons.rounded.Dashboard
 import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -221,10 +221,13 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
 
             OsFloatingBottomBar(
                 items = listOf(
-                    BarItem("概览", Icons.Rounded.Dashboard),
-                    BarItem("性能", Icons.Rounded.Speed),
-                    BarItem("帧率", Icons.AutoMirrored.Rounded.ShowChart),
-                    BarItem("电源", Icons.Rounded.BatteryFull),
+                    // 用 Filled 而不是 Rounded：底栏图标只有 22dp，
+                    // 描边式在这么小的尺寸上线条会细到发虚、四个图标粗细也不一致；
+                    // 填充式在 22dp 下的辨识度明显更高。
+                    BarItem("概览", Icons.Filled.Dashboard),
+                    BarItem("性能", Icons.Filled.Speed),
+                    BarItem("帧率", Icons.AutoMirrored.Filled.ShowChart),
+                    BarItem("电源", Icons.Filled.BatteryFull),
                 ),
                 selectedIndex = rootTab.ordinal,
                 onSelect = {

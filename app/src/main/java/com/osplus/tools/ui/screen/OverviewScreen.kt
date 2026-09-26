@@ -21,14 +21,15 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.model.BatteryInfo
 import com.osplus.tools.model.MetricSample
+import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.HealthBanner
 import com.osplus.tools.ui.components.HealthLevel
-import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.LineChart
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.OsMetricRing
 import com.osplus.tools.ui.components.SectionCard
+import com.osplus.tools.ui.components.SpecGrid
 import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
@@ -256,27 +257,46 @@ fun OverviewScreen(
                     style = OsText.value,
                     color = c.textPrimary,
                 )
-                Spacer(Modifier.height(8.dp))
-                InfoRow("SoC", cpu.soc.ifBlank { "读取中…" })
-                InfoRow("架构", cpu.abi.ifBlank { "-" })
-                InfoRow("核心", "${cpu.coreCount} 核心 · ${cpu.clusters.size} 簇")
-                // GPU 型号放在「核心」之下：两者同属芯片规格，读起来是连续的
-                InfoRow("GPU", gpu.name.ifBlank { "读取中…" })
-                InfoRow("物理内存", "${fmtGb(mem.usedKb)} / ${fmtGb(mem.totalKb)}")
-                InfoRow(
-                    label = "SWAP",
-                    value = if (mem.swapTotalKb > 0) {
-                        "${fmtGb(mem.swapUsedKb)} / ${fmtGb(mem.swapTotalKb)}"
-                    } else "未启用",
+
+                // 分三组：芯片规格 / 存储容量 / 电池损耗。
+                // 九项平铺成一条「标签左、数值右」的长列表时，三类信息完全混在一起，
+                // 中间还横着一大片空白，只能一行行扫。分组 + 两列后同样的信息量只占 5 行，
+                // 读者能直接跳到关心的那一组。
+                Spacer(Modifier.height(14.dp))
+                CardSectionLabel("芯片")
+                SpecGrid(
+                    listOf(
+                        "SoC" to cpu.soc.ifBlank { "读取中…" },
+                        "架构" to cpu.abi.ifBlank { "-" },
+                        "核心" to "${cpu.coreCount} 核心 · ${cpu.clusters.size} 簇",
+                        "GPU" to gpu.name.ifBlank { "读取中…" },
+                    )
                 )
-                InfoRow(
-                    label = "ZRAM",
-                    value = if (mem.zramTotalKb > 0) {
-                        "${fmtGb(mem.zramUsedKb)} / ${fmtGb(mem.zramTotalKb)}"
-                    } else "未启用",
+
+                Spacer(Modifier.height(16.dp))
+                CardSectionLabel("存储")
+                SpecGrid(
+                    listOf(
+                        "物理内存" to "${fmtGb(mem.usedKb)} / ${fmtGb(mem.totalKb)}",
+                        "SWAP" to if (mem.swapTotalKb > 0) {
+                            "${fmtGb(mem.swapUsedKb)} / ${fmtGb(mem.swapTotalKb)}"
+                        } else "未启用",
+                        "ZRAM" to if (mem.zramTotalKb > 0) {
+                            "${fmtGb(mem.zramUsedKb)} / ${fmtGb(mem.zramTotalKb)}"
+                        } else "未启用",
+                    )
                 )
-                InfoRow("电池健康", battery.health.ifBlank { "-" })
-                InfoRow("循环次数", if (battery.cycleCount >= 0) "${battery.cycleCount} 次" else "-")
+
+                Spacer(Modifier.height(16.dp))
+                CardSectionLabel("电池")
+                SpecGrid(
+                    listOf(
+                        "健康" to battery.health.ifBlank { "-" },
+                        "循环次数" to if (battery.cycleCount >= 0) {
+                            "${battery.cycleCount} 次"
+                        } else "-",
+                    )
+                )
             }
         }
     }
