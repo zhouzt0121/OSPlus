@@ -98,6 +98,26 @@ float2 gradSd(float2 c, float2 hs, float r) {
     return sign(c) * float2(gx, 1.0 - gx);
 }
 
+// 折射之外的两道整面处理。抽成函数是因为**早退路径也必须走一遍**：
+// 环带内做了而环带外没做，玻璃内部与边缘之间会出现一条可见的色阶断层。
+half4 finish(half4 c) {
+    // ① 饱和度提升。
+    // 苹果的液态玻璃会让透过它的背景**更饱和**，而不只是模糊 + 变灰。
+    // 少了这一步，玻璃看着像蒙了层灰纱；加上之后才有「透亮」的观感。
+    float luma = dot(c.rgb, half3(0.2126, 0.7152, 0.0722));
+    c.rgb = mix(half3(luma), c.rgb, half(1.18));
+
+    // ② 亮背景自适应压深。
+    // 浅色画布上「玻璃颜色 ≈ 背景颜色」是这类效果最常见的失效方式。
+    // 参考实现 liquid-glass-react 为此单独开了 overLight 参数，
+    // 并同时改四处（模糊基数 12→4、投影加深到 0.75、位移减半、叠 20% 黑色蒙版）。
+    // 这里取其中最轻的一种：只按亮度压一点点，且**只在很亮的背景上**起作用，
+    // 暗背景完全不动——否则会把深色主题压得更黑。
+    float bright = smoothstep(0.74, 0.97, luma);
+    c.rgb *= half(1.0 - 0.09 * bright);
+    return c;
+}
+
 half4 main(float2 coord) {
     float2 hs = uSize * 0.5;
     float2 p = coord - hs;
@@ -110,7 +130,7 @@ half4 main(float2 coord) {
 
     // 环带之外直接返回原像素：只有轮廓内侧 uBand 像素那一圈付折射的代价。
     // 中心占整块玻璃的绝大部分面积，这一步把它们从 3 次取样降到 1 次。
-    if (-sd >= uBand) return child.eval(coord);
+    if (-sd >= uBand) return finish(child.eval(coord));
 
     // 位移用圆弧剖面，不用 smoothstep。
     // circleMap 正是圆形透镜的矢高曲线，位移从环带内缘的 0 平滑升到轮廓处的最大值，
@@ -129,7 +149,7 @@ half4 main(float2 coord) {
     half4 mid = child.eval(sp);
     half4 red = child.eval(sp + n * e);
     half4 blue = child.eval(sp - n * e);
-    return half4(red.r, mid.g, blue.b, mid.a);
+    return finish(half4(red.r, mid.g, blue.b, mid.a));
 }
 """
 
