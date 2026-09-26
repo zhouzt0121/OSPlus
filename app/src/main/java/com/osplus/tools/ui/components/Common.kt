@@ -182,6 +182,64 @@ fun InfoRow(
 }
 
 /**
+ * 规格网格：两列「标签在上、数值在下」的小格。
+ *
+ * ### 为什么不用 [InfoRow] 的「标签左、数值右」长列表
+ *
+ * 设备概况有 9 项。用行式排下来会得到一条又长又平的列表：
+ * 每行的标签左对齐、数值右对齐，中间是一大片空白，
+ * 九行之间没有任何分组关系——读者只能一行行扫，且「芯片规格」「内存容量」
+ * 「电池损耗」这三类完全混在一起。
+ *
+ * 改成两列网格后：
+ * - 标签与数值**上下相邻**，视线不用横扫整屏；
+ * - 一行两格，同样的信息量只占 5 行，卡更矮、页面更透气；
+ * - 配合分组标题（芯片 / 存储 / 电池），三类信息各归其位。
+ *
+ * 数值用 `maxLines = 1` + 省略号：网格宽度固定，长文案（如 SoC 型号）
+ * 溢出时必须截断而不是换行——换行会把整行的两格撑成不等高。
+ */
+@Composable
+fun SpecGrid(
+    items: List<Pair<String, String>>,
+    modifier: Modifier = Modifier,
+) {
+    val c = osColors()
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(13.dp),
+    ) {
+        items.chunked(2).forEach { pair ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                pair.forEach { (label, value) ->
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = label,
+                            style = OsText.micro,
+                            color = c.textTertiary,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            text = value,
+                            style = OsText.value,
+                            color = c.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                // 奇数项时补一个空位，否则最后一行的那一格会被拉伸成整行宽
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/**
  * 进度行：标签 + 数值 + 圆角进度条。
  * 对应参考图中「物理内存 / 交换分区」那一类的行式用量展示。
  *
