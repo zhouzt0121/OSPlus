@@ -85,6 +85,18 @@ uniform float uRadius;
 uniform float uBand;
 uniform float uStrength;
 uniform float uDispersion;
+uniform float uDepth;
+
+// 圆角矩形的**解析梯度**：直边上给出轴对齐法线，圆角处给出径向法线。
+// 用 normalize(p) 近似在直边上会把法线拉成斜的，整圈折射方向跟着歪掉。
+float2 gradSd(float2 c, float2 hs, float r) {
+    float2 q = abs(c) - (hs - float2(r));
+    if (q.x >= 0.0 || q.y >= 0.0) {
+        return sign(c) * normalize(max(q, float2(0.0)));
+    }
+    float gx = step(q.y, q.x);
+    return sign(c) * float2(gx, 1.0 - gx);
+}
 
 half4 main(float2 coord) {
     float2 hs = uSize * 0.5;
@@ -96,17 +108,24 @@ half4 main(float2 coord) {
     float2 q = abs(p) - hs + uRadius;
     float sd = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - uRadius;
 
-    // 只让轮廓内侧 uBand 像素的环带参与折射，再往里 k 迅速归零。
-    // 中心一大片保持严格无畸变，不会出现「整块背景都在晃」的廉价感。
-    float k = 1.0 - smoothstep(-uBand, 0.0, sd);
+    // 环带之外直接返回原像素：只有轮廓内侧 uBand 像素那一圈付折射的代价。
+    // 中心占整块玻璃的绝大部分面积，这一步把它们从 3 次取样降到 1 次。
+    if (-sd >= uBand) return child.eval(coord);
 
-    // 位移沿法线指向内侧：边缘处的背景被压进来，形成一圈透镜环。
-    float2 n = normalize(p + float2(1e-6, 0.0));
-    float2 sp = coord - n * k * uStrength * uBand;
+    // 位移用圆弧剖面，不用 smoothstep。
+    // circleMap 正是圆形透镜的矢高曲线，位移从环带内缘的 0 平滑升到轮廓处的最大值，
+    // 观感才像一块磨出来的透镜；smoothstep 的 S 形曲线在靠近轮廓时会提前压平。
+    float t = clamp(-sd / uBand, 0.0, 1.0);
+    float x = 1.0 - t;
+    float d = (1.0 - sqrt(max(1.0 - x * x, 0.0))) * uStrength * uBand;
 
-    // 色散：沿法线把 R / B 各推一点点，边缘于是浮出一圈极淡的彩边。
-    // 真实玻璃的折射率随波长变化，边缘一定带色；纯灰阶的「玻璃」看着就是塑料。
-    float e = k * uDispersion;
+    // 法线再叠一个径向分量：> 0 时玻璃「中间鼓起来」，有了厚度
+    float2 n = normalize(gradSd(p, hs, uRadius) + uDepth * normalize(p + float2(1e-6, 0.0)));
+    float2 sp = coord - n * d;
+
+    // 色散只在**四角**出现：乘上 (x*y)/(hx*hy) 后直边中段为 0、四角最强。
+    // 整圈都上色散会像镜头没校准；只在转角处留一点彩边才像玻璃。
+    float e = uDispersion * ((p.x * p.y) / (hs.x * hs.y));
     half4 mid = child.eval(sp);
     half4 red = child.eval(sp + n * e);
     half4 blue = child.eval(sp - n * e);
@@ -141,6 +160,15 @@ private const val RefractionStrength = 0.9f
  * 但不会被认为是「渲染错误」的彩边。0 表示关闭（退化为纯位移折射）。
  */
 private const val RefractionDispersionPx = 1.1f
+
+/**
+ * 折射法线里的径向分量（0 = 关闭，与参考实现 `depthEffect = false` 一致）。
+ *
+ * > 0 时法线会额外朝「从中心向外」偏一点，玻璃于是有了中间鼓起的厚度，
+ * 更像一块透镜而不是一圈等厚的边框。取值要小：0.15 量级已足够，
+ * 再大会让直边上的法线不再垂直于边缘，整块玻璃看起来像被吹胀了。
+ */
+private const val RefractionDepth = 0f
 
 /** AGSL 与运行时着色器需要 Android 13（API 33）；低于此版本整条折射链降级 */
 private fun runtimeShaderSupported(): Boolean =
@@ -177,6 +205,7 @@ private fun buildRefraction(
         shader.setFloatUniform("uBand", RefractionBandPx.coerceAtMost(maxRadius))
         shader.setFloatUniform("uStrength", RefractionStrength)
         shader.setFloatUniform("uDispersion", RefractionDispersionPx)
+        shader.setFloatUniform("uDepth", RefractionDepth)
         PlatformRenderEffect.createRuntimeShaderEffect(shader, "child")
     }.getOrNull()
 }

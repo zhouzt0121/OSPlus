@@ -58,19 +58,19 @@ fun ChoiceChip(
         targetValue = if (selected) c.primary.copy(alpha = if (c.isDark) 0.26f else 0.13f) else c.cardAlt,
         label = "chipBackground",
     )
-    val stroke by animateColorAsState(
-        targetValue = if (selected) c.primary.copy(alpha = 0.62f) else c.hairline,
-        label = "chipStroke",
-    )
     val content by animateColorAsState(
         targetValue = if (selected) c.primary else c.textSecondary,
         label = "chipContent",
     )
     Box(
         modifier = modifier
-            .clip(shape)
-            .background(background)
-            .border(if (selected) 1.2.dp else 0.7.dp, stroke, shape)
+            // 玻璃表面：玻璃体由选中态决定，棱与高光由 glassSurface 统一给
+            .glassSurface(
+                shape = shape,
+                cornerRadius = 12.dp,
+                body = background,
+                elevation = 2.dp,
+            )
             .then(if (enabled) Modifier.pressable(onClick) else Modifier)
             .alpha(if (enabled) 1f else 0.45f)
             .padding(horizontal = 14.dp, vertical = 9.dp),
@@ -361,8 +361,13 @@ fun SegmentedTabs(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(13.dp))
-            .background(c.track)
+            // 槽体是一块凹进去的玻璃：不加投影（elevation = 0），否则它会浮在卡片之上
+            .glassSurface(
+                shape = RoundedCornerShape(13.dp),
+                cornerRadius = 13.dp,
+                body = c.track,
+                elevation = 0.dp,
+            )
             .padding(3.dp)
     ) {
         Row(Modifier.fillMaxWidth()) {
@@ -379,8 +384,22 @@ fun SegmentedTabs(
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(bg)
+                        .then(
+                            if (selected) {
+                                // 选中项是一块凸起的玻璃小片，压在凹槽之上：
+                                // 凹槽 + 凸片是同一块玻璃的两种受力状态，材质语言才连贯
+                                Modifier.glassSurface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    cornerRadius = 10.dp,
+                                    body = bg,
+                                    elevation = 2.dp,
+                                )
+                            } else {
+                                Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(bg)
+                            }
+                        )
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,

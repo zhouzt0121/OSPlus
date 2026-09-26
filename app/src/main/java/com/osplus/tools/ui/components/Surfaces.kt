@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.osplus.tools.ui.theme.osColors
@@ -200,6 +201,93 @@ fun Modifier.liquidGlass(
             ),
             shape = shape,
         )
+}
+
+/**
+ * 玻璃按钮表面：给**控件尺寸**的元件用的液态玻璃。
+ *
+ * ### 为什么按钮不用 `drawBackdrop` 的实时折射
+ *
+ * [liquidGlass] 那套是给**悬浮在滚动内容之上**的元件用的，靠实时采样背景才能折射。
+ * 按钮不满足这个前提，硬上会有三个问题：
+ *
+ * 1. **没有可折射的东西**。按钮坐在不透明的卡片上，卡片是纯色，
+ *    折射一片纯色得到的还是纯色——花了 GPU 却看不出任何差别。
+ * 2. **会自采样出残影**。按钮在内容层内部，而内容层被记录成 backdrop，
+ *    按钮于是采样到包含自己的上一帧，逐帧累积成拖影。
+ * 3. **数量多**。全应用几十个按钮各做一次 backdrop 绘制，滚动时开销叠加。
+ *
+ * 所以按钮改用**静态光学处理**：玻璃的辨识度本来就不靠折射，
+ * 而靠「上亮下暗的棱 + 顶光 + 内高光 + 投影」这四样——
+ * 它们在纯色背景上同样成立，代价却只是几次 drawRoundRect。
+ *
+ * [body] 由调用方按状态给出（未选中 = 卡色，选中 = 主色淡染），
+ * 因此选中态的颜色语言完全保留，玻璃只是叠在其上的一层光学。
+ *
+ * 内棱比外棱缩进 1px：玻璃是一块有厚度的板，光在上下两个面上各反射一次，
+ * 只有一圈描边会看起来像贴纸而不是玻璃。
+ */
+@Composable
+fun Modifier.glassSurface(
+    shape: Shape,
+    cornerRadius: Dp,
+    body: Color,
+    elevation: Dp = 3.dp,
+): Modifier {
+    val c = osColors()
+    val dark = c.isDark
+    val radiusPx = with(LocalDensity.current) { cornerRadius.toPx() }
+
+    // 顶光集中在顶缘一小条，中段压到接近透明——一路渐变下来是塑料反光，不是玻璃
+    val sheenTop = Color.White.copy(alpha = if (dark) 0.10f else 0.32f)
+    val sheenBottom = Color.White.copy(alpha = if (dark) 0.02f else 0.05f)
+    // 外棱：受光的顶棱亮、背光的底棱暗，这一圈才是「厚度」
+    val edgeTop = Color.White.copy(alpha = if (dark) 0.22f else 0.58f)
+    val edgeBottom = Color.Black.copy(alpha = if (dark) 0.26f else 0.13f)
+    val innerRing = Color.White.copy(alpha = if (dark) 0.07f else 0.13f)
+
+    return this
+        .shadow(elevation, shape, clip = false)
+        .clip(shape)
+        .drawWithContent {
+            val cr = CornerRadius(radiusPx)
+
+            // 玻璃体
+            drawRoundRect(color = body, cornerRadius = cr)
+            // 顶光
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    0.0f to sheenTop,
+                    0.45f to Color.Transparent,
+                    1.0f to sheenBottom,
+                ),
+                cornerRadius = cr,
+            )
+
+            drawContent()
+
+            val stroke = 1.dp.toPx()
+
+            // 外棱
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    listOf(edgeTop, Color.Transparent, edgeBottom)
+                ),
+                cornerRadius = cr,
+                size = size,
+                style = Stroke(width = stroke),
+            )
+            // 内棱：缩进一圈的第二道反射
+            drawRoundRect(
+                brush = Brush.verticalGradient(
+                    listOf(innerRing, Color.Transparent)
+                ),
+                topLeft = Offset(stroke, stroke),
+                size = Size(size.width - stroke * 2, size.height - stroke * 2),
+                cornerRadius = CornerRadius((radiusPx - stroke).coerceAtLeast(0f)),
+                style = Stroke(width = stroke),
+            )
+        }
 }
 
 /**
