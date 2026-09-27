@@ -277,8 +277,16 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         val fpsState = FpsRecorder.sample.value
         val powerMw = estimatePowerMw(tick, now)
 
-        // 供桌面悬浮窗显示
-        LiveMetrics.update(cpuLoad, tick.gpuLoad)
+        // 供桌面悬浮窗与前台服务通知显示；CPU 频率取各核平均（kHz → MHz）
+        val cpuFreqMhz = if (coreFreqs.isEmpty()) 0 else (coreFreqs.average() / 1000.0).toInt()
+        LiveMetrics.update(
+            cpuLoad = cpuLoad,
+            gpuLoad = tick.gpuLoad,
+            cpuFreqMhz = cpuFreqMhz,
+            gpuMhz = if (tick.gpuMhz > 0) tick.gpuMhz.toInt() else -1,
+            memAvailKb = (tick.memTotalKb - tick.memUsedKb).coerceAtLeast(0L),
+            memTotalKb = tick.memTotalKb,
+        )
 
         val sample = MetricSample(
             timeMs = now,

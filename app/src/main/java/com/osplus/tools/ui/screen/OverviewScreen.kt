@@ -90,6 +90,7 @@ fun OverviewScreen(
     vm: DeviceViewModel,
     onOpen: (OverviewDetail) -> Unit,
     onOpenPower: () -> Unit,
+    onOpenFps: () -> Unit,
 ) {
     val history by vm.history.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
@@ -229,7 +230,7 @@ fun OverviewScreen(
                 }
                 SectionCard(
                     modifier = Modifier.weight(1f),
-                    onClick = onOpenPower,
+                    onClick = onOpenFps,
                     contentHeight = MetricCellContentHeight,
                 ) {
                     FpsTrendCard(values = trend.map { it.fps }, axisStartLabel = fpsAxisStart)

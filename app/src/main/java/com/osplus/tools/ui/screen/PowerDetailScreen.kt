@@ -39,7 +39,6 @@ import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.MetricChartCard
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
-import com.osplus.tools.ui.components.SegmentedTabs
 import com.osplus.tools.ui.components.SwitchRow
 import com.osplus.tools.ui.components.UsageBar
 import com.osplus.tools.ui.components.axisSpanLabel
@@ -47,6 +46,7 @@ import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
 import com.osplus.tools.ui.components.LiquidGlassButton
+import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.LiquidSlider
 import top.yukonga.miuix.kmp.basic.Text
 import com.osplus.tools.ui.components.bottomBarContentPadding
@@ -58,8 +58,8 @@ fun PowerDetailScreen(vm: DeviceViewModel) {
     val tabs = remember { listOf("耗电统计", "充电统计", "充电控制") }
 
     Column(Modifier.fillMaxSize()) {
-        SegmentedTabs(
-            tabs = tabs,
+        LiquidNavTabs(
+            items = tabs,
             selectedIndex = tab,
             onSelect = { tab = it },
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),

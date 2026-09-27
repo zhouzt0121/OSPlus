@@ -35,10 +35,10 @@ import com.osplus.tools.model.MetricSample
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.CoreBarsChart
 import com.osplus.tools.ui.components.Hairline
+import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.MetricChartCard
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
-import com.osplus.tools.ui.components.SegmentedTabs
 import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.pressable
@@ -51,8 +51,8 @@ import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 趋势观察窗口的候选长度（秒），与采样间隔 1 秒一一对应 */
-private val WindowLabels = listOf("5秒", "1分", "5分", "30分")
-private val WindowSeconds = listOf(5, 60, 300, 1800)
+private val WindowLabels = listOf("1分", "5分", "15分", "30分")
+private val WindowSeconds = listOf(60, 300, 900, 1800)
 
 /**
  * 性能（一级页）：进程占用 + 累积趋势 + 每核状态 + 调优入口。
@@ -83,7 +83,7 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
     val c = osColors()
 
     // 默认 5 分：短到能看出抖动，长到不至于只剩噪声
-    var windowIndex by rememberSaveable { mutableIntStateOf(2) }
+    var windowIndex by rememberSaveable { mutableIntStateOf(1) }
     val windowSeconds = WindowSeconds[windowIndex]
 
     val samples: List<MetricSample> = history.takeLast(windowSeconds)
@@ -187,8 +187,8 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
 
         // ---------- 观察窗口选择器（只作用于紧随其后的趋势卡）----------
         item {
-            SegmentedTabs(
-                tabs = WindowLabels,
+            LiquidNavTabs(
+                items = WindowLabels,
                 selectedIndex = windowIndex,
                 onSelect = { windowIndex = it },
             )

@@ -7,8 +7,14 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
@@ -23,6 +29,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.RemoteViews
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import com.osplus.tools.MainActivity
@@ -92,6 +99,13 @@ class FpsOverlayService : Service() {
             ) { fps, cpu, gpu, recording -> OverlayValues(fps.fps, cpu, gpu, recording) }
                 .collectLatest { v ->
                     overlayView?.text = buildOverlayText(v)
+                }
+        }
+        // 通知实时状态：每秒一次的采样快照驱动通知两行数值刷新
+        scope.launch {
+            combine(LiveMetrics.snapshot, FpsRecorder.recording) { s, rec -> s to rec }
+                .collectLatest { (s, _) ->
+                    updateNotification()
                 }
         }
         // 界面调整不透明度后立即作用到窗口，无需重启服务
@@ -284,6 +298,17 @@ class FpsOverlayService : Service() {
         return y.coerceIn(0, max)
     }
 
+    /**
+     * 前台服务通知：自定义 RemoteViews + App 内预渲染的「凝光」材质 Bitmap。
+     *
+     * RemoteViews 不支持自定义 View / Canvas / Shader，玻璃质感无法在通知里实时画，
+     * 所以材质在 App 进程里预渲染成一张图塞进 [android.widget.ImageView]，
+     * 两行实时数值用 RemoteViews 的 TextView 叠在图上：
+     * 第一行 CPU（频率、占用）与 GPU（频率、占用），第二行内存（可用 / 全部）。
+     *
+     * 通知渠道走标准 [android.app.NotificationChannel]（OsPlusApplication 里注册），
+     * 更新只走 [NotificationManager.notify]，保持完全原生通知。
+     */
     private fun buildNotification(): Notification {
         val intent = PendingIntent.getActivity(
             this,
@@ -291,23 +316,113 @@ class FpsOverlayService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val recording = FpsRecorder.recording.value
+        val views = RemoteViews(packageName, R.layout.notification_glass)
+        views.setImageViewBitmap(R.id.notif_glass_bg, glassBitmap())
+        applyNotificationText(views)
         return NotificationCompat.Builder(this, OsPlusApplication.CHANNEL_FPS)
-            .setContentTitle(if (recording) "OSPlus 正在记录帧率" else "OSPlus 帧率监视")
-            .setContentText(
-                if (recording) {
-                    "轻点悬浮窗停止记录，长按拖动位置"
-                } else {
-                    "轻点悬浮窗开始记录，长按拖动位置"
-                },
-            )
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setCustomContentView(views)
+            .setCustomBigContentView(views)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(intent)
             .build()
     }
 
-    /** 记录状态变化后刷新通知文案 */
+    /** 把两行实时数值写进 RemoteViews；数据取 [LiveMetrics.snapshot] 的最新值 */
+    private fun applyNotificationText(views: RemoteViews) {
+        val s = LiveMetrics.snapshot.value
+        val cpuFreq = if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"
+        val cpuLoad = "%.0f%%".format(s.cpuLoad)
+        val gpuFreq = if (s.gpuMhz > 0) fmtFreq(s.gpuMhz) else "--"
+        val gpuLoad = if (s.gpuLoad >= 0) "${s.gpuLoad}%" else "--"
+        val recording = FpsRecorder.recording.value
+        val dot = if (recording) "● " else ""
+        views.setTextViewText(
+            R.id.notif_line1,
+            "${dot}CPU $cpuFreq · $cpuLoad    GPU $gpuFreq · $gpuLoad",
+        )
+        val totalGb = s.memTotalKb / 1024.0 / 1024.0
+        val availGb = s.memAvailKb / 1024.0 / 1024.0
+        val memText = if (totalGb > 0) "%.1f GB / %.1f GB".format(availGb, totalGb) else "--"
+        views.setTextViewText(R.id.notif_line2, "内存 $memText")
+    }
+
+    /** MHz → 「2.05GHz」/「855MHz」 */
+    private fun fmtFreq(mhz: Int): String =
+        if (mhz >= 1000) "%.2fGHz".format(mhz / 1000.0) else "${mhz}MHz"
+
+    /** 凝光材质 Bitmap 缓存：尺寸与渠道风格不随采样变化，渲染一次反复使用 */
+    private var cachedGlass: Bitmap? = null
+
+    private fun glassBitmap(): Bitmap {
+        cachedGlass?.let { return it }
+        val d = resources.displayMetrics.density
+        val width = (resources.displayMetrics.widthPixels * 0.92f).toInt().coerceIn(360, 1080)
+        val height = (74f * d).toInt().coerceAtLeast(96)
+        val radius = 22f * d
+
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val rect = RectF(0f, 0f, width.toFloat(), height.toFloat())
+
+        // 1) 玻璃体：纵向深蓝渐变，模拟半透明深色玻璃的厚度
+        val body = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                0f, 0f, 0f, height.toFloat(),
+                Color.parseColor("#E62A3750"),
+                Color.parseColor("#D8131826"),
+                Shader.TileMode.CLAMP,
+            )
+        }
+        canvas.drawRoundRect(rect, radius, radius, body)
+
+        // 2) 凝光：斜向高光带，从左上掠到右下，模拟光源在曲面玻璃上的反射
+        val gloss = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                0f, 0f, width.toFloat(), height.toFloat(),
+                intArrayOf(
+                    Color.parseColor("#40FFFFFF"),
+                    Color.parseColor("#14FFFFFF"),
+                    Color.parseColor("#00000000"),
+                    Color.parseColor("#0FFFFFFF"),
+                ),
+                floatArrayOf(0f, 0.35f, 0.62f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+        }
+        canvas.drawRoundRect(rect, radius, radius, gloss)
+
+        // 3) 顶部受光边缘：一条更亮的细渐变，勾出玻璃上缘
+        val topEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                0f, 0f, 0f, 10f * d,
+                Color.parseColor("#59FFFFFF"),
+                Color.parseColor("#00FFFFFF"),
+                Shader.TileMode.CLAMP,
+            )
+        }
+        canvas.drawRoundRect(rect, radius, radius, topEdge)
+
+        // 4) 发丝描边：勾出轮廓，通知阴影里仍有清晰边界
+        val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 1f * d
+            color = Color.parseColor("#2EFFFFFF")
+        }
+        val outlineRect = RectF(
+            rect.left + 0.5f * d,
+            rect.top + 0.5f * d,
+            rect.right - 0.5f * d,
+            rect.bottom - 0.5f * d,
+        )
+        canvas.drawRoundRect(outlineRect, radius - 0.5f * d, radius - 0.5f * d, outline)
+
+        cachedGlass = bmp
+        return bmp
+    }
+
+    /** 记录状态或采样快照变化后刷新通知内容 */
     private fun updateNotification() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         runCatching { nm.notify(NOTIFICATION_ID, buildNotification()) }
@@ -319,6 +434,8 @@ class FpsOverlayService : Service() {
         overlayView?.let { v -> runCatching { windowManager.removeView(v) } }
         overlayView = null
         layoutParams = null
+        cachedGlass?.recycle()
+        cachedGlass = null
         // 仍在记录时不要停掉统计器，否则记录会被中断
         FpsRecorder.overlayHolds = false
         if (!FpsRecorder.recording.value) FpsRecorder.stop()

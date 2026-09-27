@@ -1,12 +1,18 @@
 package com.osplus.tools.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -25,9 +31,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.util.fastRoundToInt
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
@@ -594,6 +606,104 @@ fun HealthBanner(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+        }
+    }
+}
+
+/**
+ * 液态导航分段条：与底部悬浮导航栏同语言的内嵌选项条。
+ *
+ * 全应用凡「一组互斥按钮」（性能页观察窗口、帧率分析窗口、电源页签、主题模式等）
+ * 统一用这一个组件——单条圆角玻璃横条 + 一枚随选中项平移的强调色胶囊，
+ * 与 LiquidBottomBar 的视觉语法完全一致。
+ *
+ * 动作型按钮组（导出 CSV、权限授权等）也可复用：传 [selectedIndex] = -1，
+ * 胶囊跟随最近一次按下的项，点按回调直接执行动作。
+ */
+@Composable
+fun LiquidNavTabs(
+    items: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val c = osColors()
+    val barShape = RoundedCornerShape(percent = 50)
+    val density = LocalDensity.current
+    // 动作组（selectedIndex < 0）时，胶囊显示最近一次按下的项
+    var lastPressed by remember { mutableStateOf(if (selectedIndex >= 0) selectedIndex else -1) }
+    val pillIndex = if (selectedIndex >= 0) selectedIndex else lastPressed
+    val itemCount = items.size.coerceAtLeast(1)
+
+    var pressedIndex by remember { mutableStateOf(-1) }
+    val pressAlpha by animateFloatAsState(
+        targetValue = if (pressedIndex >= 0) 0.72f else 1f,
+        label = "navTabsPress",
+    )
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(46.dp)
+            .shadow(6.dp, barShape, clip = false)
+            .clip(barShape)
+            .background(c.cardElevated)
+            .border(0.7.dp, c.hairline, barShape),
+    ) {
+        val itemWidth = maxWidth / itemCount
+        val itemWidthPx = with(density) { itemWidth.toPx() }
+        val barHeight = 46.dp
+
+        // 选中胶囊（与底栏一致的强调色淡染）
+        if (pillIndex in 0 until itemCount) {
+            val pillX by animateFloatAsState(
+                targetValue = pillIndex * itemWidthPx,
+                animationSpec = spring(dampingRatio = 0.82f, stiffness = 520f),
+                label = "navTabsPill",
+            )
+            Box(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .offset { IntOffset(pillX.fastRoundToInt(), 0) }
+                    .width(itemWidth)
+                    .height(barHeight)
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(c.primary.copy(alpha = if (c.isDark) 0.22f else 0.14f))
+            )
+        }
+
+        Row(Modifier.fillMaxSize()) {
+            items.forEachIndexed { index, label ->
+                val selected = index == pillIndex
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(percent = 50))
+                        .then(
+                            if (enabled) {
+                                Modifier.pressable {
+                                    lastPressed = index
+                                    onSelect(index)
+                                }
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .alpha(if (enabled) 1f else 0.45f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        text = label,
+                        style = OsText.label,
+                        color = if (selected) c.primary else c.textSecondary,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }

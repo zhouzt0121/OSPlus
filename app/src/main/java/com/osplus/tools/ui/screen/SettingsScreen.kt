@@ -27,11 +27,10 @@ import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
-import com.osplus.tools.ui.components.SegmentedTabs
 import com.osplus.tools.ui.components.SwitchRow
 import com.osplus.tools.ui.theme.AppThemeMode
 import com.osplus.tools.vm.DeviceViewModel
-import com.osplus.tools.ui.components.LiquidGlassButton
+import com.osplus.tools.ui.components.LiquidNavTabs
 import top.yukonga.miuix.kmp.basic.Text
 import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -93,19 +92,15 @@ fun SettingsScreen(vm: DeviceViewModel) {
                     )
                     InfoRow("通知", value = "安装后首次启动申请")
                     Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        LiquidGlassButton(onClick = { vm.refreshRootState() }) { Text("重新检测 Root") }
-                        LiquidGlassButton(onClick = {
-                            runCatching {
-                                context.startActivity(
-                                    Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                )
-                            }
-                        }) { Text("使用情况访问") }
+                    fun openUsageAccess() {
+                        runCatching {
+                            context.startActivity(
+                                Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
                     }
-                    Spacer(Modifier.height(8.dp))
-                    LiquidGlassButton(onClick = {
+                    fun openOverlayAccess() {
                         runCatching {
                             context.startActivity(
                                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
@@ -113,7 +108,19 @@ fun SettingsScreen(vm: DeviceViewModel) {
                                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             )
                         }
-                    }) { Text("悬浮窗权限") }
+                    }
+                    // 与底栏同语言的动作条，与页面背景明显区分
+                    LiquidNavTabs(
+                        items = listOf("重新检测 Root", "使用情况访问", "悬浮窗权限"),
+                        selectedIndex = -1,
+                        onSelect = {
+                            when (it) {
+                                0 -> vm.refreshRootState()
+                                1 -> openUsageAccess()
+                                else -> openOverlayAccess()
+                            }
+                        },
+                    )
                 }
             }
         }
@@ -123,8 +130,8 @@ fun SettingsScreen(vm: DeviceViewModel) {
                 Column(Modifier.padding(vertical = 5.dp)) {
                     CardSectionLabel("主题")
                     Spacer(Modifier.height(8.dp))
-                    SegmentedTabs(
-                        tabs = AppThemeMode.entries.map { it.label },
+                    LiquidNavTabs(
+                        items = AppThemeMode.entries.map { it.label },
                         selectedIndex = AppThemeMode.entries.indexOf(themeMode),
                         onSelect = { vm.setThemeMode(AppThemeMode.entries[it]) },
                     )
@@ -158,7 +165,7 @@ fun SettingsScreen(vm: DeviceViewModel) {
             SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("应用", "OSPlus")
-                    InfoRow("版本", "1.5.0")
+                    InfoRow("版本", "2.0.0")
                     InfoRow("包名", context.packageName)
                     InfoRow("设备", "${Build.MANUFACTURER} ${Build.MODEL}")
                     InfoRow("系统", "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")

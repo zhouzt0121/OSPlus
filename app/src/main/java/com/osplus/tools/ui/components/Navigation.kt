@@ -209,3 +209,82 @@ fun OsTopBarAction(
         )
     }
 }
+
+/**
+ * 顶栏胶囊按钮：图标 + 短文字标签。
+ *
+ * 概览页顶栏原本给「清理内存 / 清理交换」用的是与「记录帧率 / 设置」完全相同的
+ * 圆形图标按钮，两个动作只有一个 19dp 的图标可辨，「清理交换分区」用 Refresh
+ * 图标更是让人误以为是刷新。重绘成带文字的胶囊：动作含义一眼可读，
+ * 与右侧的圆形图标按钮在视觉上也区分出「一键执行类」与「导航类」。
+ *
+ * 玻璃材质与 [OsTopBarAction] 完全一致：静止纯毛玻璃，按压时折射渐入。
+ */
+@Composable
+fun OsTopBarPillAction(
+    icon: ImageVector,
+    label: String,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    backdrop: Backdrop? = null,
+) {
+    val c = osColors()
+    val pillShape = RoundedCornerShape(percent = 50)
+    val container = LiquidGlassColors.container()
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val press by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f),
+        label = "topBarPillPress",
+    )
+    Row(
+        modifier = modifier
+            .height(TopBarActionSize)
+            .then(
+                if (backdrop != null) {
+                    Modifier.drawBackdrop(
+                        backdrop = backdrop,
+                        shape = { pillShape },
+                        effects = {
+                            vibrancy()
+                            blur(2f.dp.toPx())
+                            lens(12f.dp.toPx() * press, 24f.dp.toPx() * press)
+                        },
+                        highlight = { Highlight.Default },
+                        onDrawSurface = { drawRect(container) },
+                    )
+                } else {
+                    Modifier
+                        .clip(pillShape)
+                        .background(LiquidGlassColors.container())
+                }
+            )
+            .then(
+                if (enabled) {
+                    Modifier.pressable(interactionSource = interaction, onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
+            .alpha(if (enabled) 1f else 0.4f)
+            .padding(horizontal = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = c.textSecondary,
+            modifier = Modifier.size(15.dp),
+        )
+        Text(
+            text = label,
+            style = OsText.caption,
+            color = c.textPrimary,
+            maxLines = 1,
+        )
+    }
+}

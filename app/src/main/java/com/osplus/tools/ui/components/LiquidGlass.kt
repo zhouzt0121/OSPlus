@@ -8,7 +8,6 @@ import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -108,14 +107,16 @@ object LiquidGlassColors {
     val trackLight = Color(0xFF787878).copy(alpha = 0.2f)
     val trackDark = Color(0xFF787880).copy(alpha = 0.36f)
 
+    // 深浅判定必须跟「应用主题」而不是系统主题：
+    // 手动选择深色而系统是浅色时，玻璃若仍按系统取浅色会出现发灰的割裂感
     @Composable
-    fun accent(): Color = if (isSystemInDarkTheme()) accentDark else accentLight
+    fun accent(): Color = if (osColors().isDark) accentDark else accentLight
 
     @Composable
-    fun container(): Color = if (isSystemInDarkTheme()) containerDark else containerLight
+    fun container(): Color = if (osColors().isDark) containerDark else containerLight
 
     @Composable
-    fun track(): Color = if (isSystemInDarkTheme()) trackLight else trackDark
+    fun track(): Color = if (osColors().isDark) trackDark else trackLight
 }
 
 /**
@@ -138,7 +139,7 @@ fun LiquidToggle(
     backdrop: Backdrop? = null,
     enabled: Boolean = true,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = osColors().isDark
     val accent = if (dark) LiquidGlassColors.switchAccentDark else LiquidGlassColors.switchAccentLight
     val trackColor = if (dark) LiquidGlassColors.trackDark else LiquidGlassColors.trackLight
     val shape = RoundedCornerShape(percent = 50)
@@ -279,7 +280,7 @@ fun LiquidSlider(
     backdrop: Backdrop? = null,
     onValueChangeFinished: () -> Unit = {},
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = osColors().isDark
     val accent = if (dark) LiquidGlassColors.accentDark else LiquidGlassColors.accentLight
     val trackColor = if (dark) LiquidGlassColors.trackDark else LiquidGlassColors.trackLight
     val shape = RoundedCornerShape(percent = 50)
