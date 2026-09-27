@@ -6,7 +6,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,10 +37,13 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
@@ -103,14 +107,16 @@ object LiquidGlassColors {
     val trackLight = Color(0xFF787878).copy(alpha = 0.2f)
     val trackDark = Color(0xFF787880).copy(alpha = 0.36f)
 
+    // 深浅判定必须跟「应用主题」而不是系统主题：
+    // 手动选择深色而系统是浅色时，玻璃若仍按系统取浅色会出现发灰的割裂感
     @Composable
-    fun accent(): Color = if (isSystemInDarkTheme()) accentDark else accentLight
+    fun accent(): Color = if (osColors().isDark) accentDark else accentLight
 
     @Composable
-    fun container(): Color = if (isSystemInDarkTheme()) containerDark else containerLight
+    fun container(): Color = if (osColors().isDark) containerDark else containerLight
 
     @Composable
-    fun track(): Color = if (isSystemInDarkTheme()) trackLight else trackDark
+    fun track(): Color = if (osColors().isDark) trackDark else trackLight
 }
 
 /**
@@ -133,7 +139,7 @@ fun LiquidToggle(
     backdrop: Backdrop? = null,
     enabled: Boolean = true,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = osColors().isDark
     val accent = if (dark) LiquidGlassColors.switchAccentDark else LiquidGlassColors.switchAccentLight
     val trackColor = if (dark) LiquidGlassColors.trackDark else LiquidGlassColors.trackLight
     val shape = RoundedCornerShape(percent = 50)
@@ -145,6 +151,18 @@ fun LiquidToggle(
     )
 
     var didDrag by remember { mutableStateOf(false) }
+
+    // 透视（lens）只在按压时出现：点按的按压态来自 pressable 的
+    // interactionSource，拖动的按压态来自 draggable 的开始/结束回调，
+    // 两者任一为真即视为「正在触摸」。
+    val interaction = remember { MutableInteractionSource() }
+    val tapPressed by interaction.collectIsPressedAsState()
+    var dragPressed by remember { mutableStateOf(false) }
+    val press by animateFloatAsState(
+        targetValue = if (tapPressed || dragPressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f),
+        label = "togglePress",
+    )
 
     Box(
         modifier = modifier
@@ -169,10 +187,16 @@ fun LiquidToggle(
                                     onCheckedChange(delta > 0f)
                                 }
                             },
-                            onDragStarted = { didDrag = false },
-                            onDragStopped = { didDrag = false },
+                            onDragStarted = {
+                                didDrag = false
+                                dragPressed = true
+                            },
+                            onDragStopped = {
+                                didDrag = false
+                                dragPressed = false
+                            },
                         )
-                        .pressable {
+                        .pressable(interactionSource = interaction) {
                             // 拖过就不再当作点击，避免「拖到开」之后又被点回关
                             if (!didDrag) onCheckedChange(!checked)
                         }
@@ -193,12 +217,12 @@ fun LiquidToggle(
                             backdrop = backdrop,
                             shape = { shape },
                             effects = {
-                                // 官方：未按下时 blur 全额、按下时折射全额
-                                val p = fraction
-                                blur(8f.dp.toPx() * (1f - p))
+                                // 统一规则：静止 = 毛玻璃（blur 全额、无折射），
+                                // 按压/拖动时折射随 press 渐入
+                                blur(8f.dp.toPx())
                                 lens(
-                                    5f.dp.toPx() * p,
-                                    10f.dp.toPx() * p,
+                                    5f.dp.toPx() * press,
+                                    10f.dp.toPx() * press,
                                     chromaticAberration = true,
                                 )
                             },
@@ -256,7 +280,7 @@ fun LiquidSlider(
     backdrop: Backdrop? = null,
     onValueChangeFinished: () -> Unit = {},
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = osColors().isDark
     val accent = if (dark) LiquidGlassColors.accentDark else LiquidGlassColors.accentLight
     val trackColor = if (dark) LiquidGlassColors.trackDark else LiquidGlassColors.trackLight
     val shape = RoundedCornerShape(percent = 50)
@@ -270,17 +294,23 @@ fun LiquidSlider(
     ) {
         val trackWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
         var didDrag by remember { mutableStateOf(false) }
+        // 透视只在拖动滑块时出现；静止时滑块是纯毛玻璃
+        var thumbDrag by remember { mutableStateOf(false) }
+        val thumbPress by animateFloatAsState(
+            targetValue = if (thumbDrag) 1f else 0f,
+            animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f),
+            label = "sliderPress",
+        )
 
-        // 轨道：底色 + 已填充段。官方用 `layout` 把填充段裁到当前进度宽，
-        // 比用 Modifier.width 好在不会触发布局重排。
+        // 点按热区放大到整行 24dp 高：原来 pointerInput 挂在 6dp 的轨道条上，
+        // 真机上手指很难点中这条细缝。视觉轨道仍是 6dp，只是命中区变大。
         Box(
             Modifier
-                .clip(shape)
-                .background(trackColor)
+                .fillMaxWidth()
+                .height(24.dp)
                 .pointerInput(enabled) {
                     detectTapGestures { pos ->
                         if (enabled) {
-                            didDrag = true
                             // 不用 lerp()：当前作用域里 lerp 解析到的是 Color 版
                             // （给 LiquidToggle 的轨道混色用的），这里要的是 Float 版。
                             // 直接算比加别名 import 更不容易踩到重载歧义。
@@ -292,10 +322,17 @@ fun LiquidSlider(
                             onValueChangeFinished()
                         }
                     }
-                }
-                .height(6.dp)
-                .fillMaxWidth()
-        )
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Box(
+                Modifier
+                    .clip(shape)
+                    .background(trackColor)
+                    .height(6.dp)
+                    .fillMaxWidth()
+            )
+        }
         Box(
             Modifier
                 .clip(shape)
@@ -326,9 +363,13 @@ fun LiquidSlider(
                                             .coerceIn(valueRange)
                                     )
                                 },
-                                onDragStarted = { didDrag = false },
+                                onDragStarted = {
+                                    didDrag = false
+                                    thumbDrag = true
+                                },
                                 onDragStopped = {
                                     didDrag = false
+                                    thumbDrag = false
                                     onValueChangeFinished()
                                 },
                             )
@@ -342,10 +383,11 @@ fun LiquidSlider(
                             backdrop = backdrop,
                             shape = { shape },
                             effects = {
-                                blur(8f.dp.toPx() * (1f - progress))
+                                // 统一规则：静止 = 毛玻璃，拖动时折射渐入
+                                blur(8f.dp.toPx())
                                 lens(
-                                    10f.dp.toPx() * progress,
-                                    14f.dp.toPx() * progress,
+                                    10f.dp.toPx() * thumbPress,
+                                    14f.dp.toPx() * thumbPress,
                                     chromaticAberration = true,
                                 )
                             },
@@ -410,6 +452,14 @@ fun LiquidGlassButton(
     content: @Composable RowScope.() -> Unit,
 ) {
     val shape = RoundedCornerShape(percent = 50)
+    // 透视只在按压时出现，静止时是纯毛玻璃
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val press by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f),
+        label = "buttonPress",
+    )
 
     Row(
         modifier = modifier
@@ -420,10 +470,12 @@ fun LiquidGlassButton(
                         backdrop = backdrop,
                         shape = { shape },
                         effects = {
-                            // 官方 LiquidButton 的三个效果，参数照抄
                             vibrancy()
                             blur(2f.dp.toPx())
-                            lens(12f.dp.toPx(), 24f.dp.toPx())
+                            lens(
+                                12f.dp.toPx() * press,
+                                24f.dp.toPx() * press,
+                            )
                         },
                         highlight = { Highlight.Default },
                         onDrawSurface = {
@@ -440,7 +492,13 @@ fun LiquidGlassButton(
                     Modifier.glassStaticSurface(shape, tint, surfaceColor)
                 }
             )
-            .then(if (enabled) Modifier.pressable(onClick) else Modifier)
+            .then(
+                if (enabled) {
+                    Modifier.pressable(interactionSource = interaction, onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
             .height(48.dp)
             .padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
@@ -491,11 +549,14 @@ private fun Modifier.glassStaticSurface(
  *
  * ### 点击 + 横向拖动切换（统一手势）
  *
- * 一个 `detectHorizontalDragGestures` 同时承接「点按选 tab」与「横向拖动切 tab」：
- * - 拖动位移 < 12px 视为点按 → 按落点 x 算出命中的 tab
- * - 否则按拖动方向切到相邻 tab（左拖 → 右一个，右拖 → 左一个）
- * - 选中胶囊（单一覆盖层，非逐 item 自绘）用 `animatedOffset` 跟随手指，
- *   松手归零、由 spring 弹回新位置——这层「跟随」就是官方 `InteractiveHighlight` 的等价替代。
+ * 点按与横向拖动由两个 pointerInput 分工承接：
+ * - 点按：`detectTapGestures` 按落点 x 算出命中的 tab——必须独立于拖动检测，
+ *   因为 `detectHorizontalDragGestures` 的回调只在越过横向 touch slop 后触发，
+ *   干净的「点一下」不会走到它的 onDragEnd
+ * - 拖动：`detectHorizontalDragGestures`，位移 ≥ 12px 时按胶囊松手落位
+ *   取整选择目标页——拖过几格就切几格，胶囊停在哪页就选中哪页
+ * - 选中胶囊（单一覆盖层，非逐 item 自绘）的 spring 动画同时服务两者：
+ *   拖动时经弹簧阻尼跟手，切换 tab 时平滑滑到新位置
  *
  * 用 `rememberUpdatedState` 把 `selectedIndex` / `onSelect` 的最新值喂给手势闭包，
  * 这样 `pointerInput` 只需建一次（key = Unit），避免每次选中重建手势把进行中的拖动打断。
@@ -521,39 +582,76 @@ fun LiquidBottomBar(
 
     // 拖动偏移（px），跟随手指；松手归零 → spring 弹回当前选中位
     var dragOffsetPx by remember { mutableStateOf(0f) }
-    val animatedOffset by animateFloatAsState(
-        targetValue = dragOffsetPx,
-        animationSpec = spring(dampingRatio = 0.82f, stiffness = 520f),
-        label = "barDragOffset",
-    )
     // 点按落点的 x（px），用于判定命中哪个 tab
     var tapStartX by remember { mutableStateOf(0f) }
+    // 透视只在触摸底栏（拖动或点按）时出现，静止时是纯毛玻璃
+    var barPressed by remember { mutableStateOf(false) }
+    val barPress by animateFloatAsState(
+        targetValue = if (barPressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f),
+        label = "barPress",
+    )
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
+            // edge-to-edge 下必须避让系统导航栏：三键导航（~48dp）会把整条压在
+            // 按键下面导致点不到，手势导航也会与底部提示条抢触摸。
+            .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(horizontal = 12.dp, vertical = 10.dp)
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
-                    onDragStart = { tapStartX = it.x },
+                    onDragStart = {
+                        tapStartX = it.x
+                        barPressed = true
+                    },
                     onHorizontalDrag = { _, dragAmount -> dragOffsetPx += dragAmount },
                     onDragEnd = {
-                        val itemWidthPx = size.width / itemCount.toFloat()
-                        if (kotlin.math.abs(dragOffsetPx) < 12f) {
-                            // 视为点按：落点在第几个 tab
+                        if (kotlin.math.abs(dragOffsetPx) >= 12f) {
+                            // 拖到哪一格就切到哪一格：按胶囊松手位置四舍五入取整，
+                            // 可一次跨多格（拖远时不再是只切相邻页导致胶囊回弹脱节）
+                            val cellW = size.width / itemCount.toFloat()
+                            val next = (currentSelected +
+                                kotlin.math.round(dragOffsetPx / cellW).toInt())
+                                .coerceIn(0, itemCount - 1)
+                            if (next != currentSelected) currentOnSelect(next)
+                        } else {
+                            // 越过 touch slop 但位移不足：按起始落点视作点按
+                            val itemWidthPx = size.width / itemCount.toFloat()
                             val idx = (tapStartX / itemWidthPx)
                                 .toInt()
                                 .coerceIn(0, itemCount - 1)
                             if (idx != currentSelected) currentOnSelect(idx)
-                        } else {
-                            // 视为拖动：左拖→右一个、右拖→左一个
-                            val dir = if (dragOffsetPx < 0f) 1 else -1
-                            val next = (currentSelected + dir).coerceIn(0, itemCount - 1)
-                            if (next != currentSelected) currentOnSelect(next)
                         }
                         dragOffsetPx = 0f
+                        barPressed = false
                     },
-                    onDragCancel = { dragOffsetPx = 0f },
+                    onDragCancel = {
+                        dragOffsetPx = 0f
+                        barPressed = false
+                    },
+                )
+            }
+            // 点按检测必须独立于拖动检测：detectHorizontalDragGestures 的
+            // onDragStart/onDragEnd 只在横向越过 touch slop 后才回调，
+            // 干净的「点一下」会以 onDragCancel 收场——之前把选 tab 写在
+            // onDragEnd 里，结果整个底栏只能拖、不能点。
+            // 这个 pointerInput 放在拖动检测之后：真拖动时拖动检测先消费事件，
+            // 点按检测看到已消费的移动会自动放弃，两种手势互不打架。
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        barPressed = true
+                        tryAwaitRelease()
+                        barPressed = false
+                    },
+                    onTap = { pos ->
+                        val itemWidthPx = size.width / itemCount.toFloat()
+                        val idx = (pos.x / itemWidthPx)
+                            .toInt()
+                            .coerceIn(0, itemCount - 1)
+                        if (idx != currentSelected) currentOnSelect(idx)
+                    },
                 )
             },
         contentAlignment = Alignment.Center,
@@ -572,29 +670,49 @@ fun LiquidBottomBar(
                     backdrop = backdrop,
                     shape = { barShape },
                     effects = {
-                        // 官方 LiquidBottomTabs 的三个效果，顺序与参数照抄
+                        // 统一规则：静止 = 毛玻璃，触摸时折射渐入
                         vibrancy()
                         blur(8f.dp.toPx())
-                        lens(24f.dp.toPx(), 24f.dp.toPx())
+                        lens(24f.dp.toPx() * barPress, 24f.dp.toPx() * barPress)
                     },
                     highlight = { Highlight.Default },
                     onDrawSurface = { drawRect(container) },
                 ),
         )
 
-        // 选中胶囊（单一覆盖层，跟随手指）
-        val pillX = (selectedIndex * itemWidthPx + animatedOffset)
+        // 选中胶囊（单一覆盖层）。
+        // 拖动时 dragOffsetPx 让它跟手；切换 tab 时目标位置变化，
+        // 由同一个 spring 平滑滑过去——之前只动画「拖动偏移」，
+        // 点选其他 tab 时胶囊瞬间跳位，观感是「闪现」。
+        val pillTarget = (selectedIndex * itemWidthPx + dragOffsetPx)
             .coerceIn(0f, totalWidthPx - itemWidthPx)
+        val pillX by animateFloatAsState(
+            targetValue = pillTarget,
+            animationSpec = spring(dampingRatio = 0.82f, stiffness = 520f),
+            label = "barPillX",
+        )
         Box(
             Modifier
-                .offset { IntOffset(pillX.toInt(), 0) }
+                // 必须显式对齐到左缘：BoxWithConstraints 是 contentAlignment = Center，
+                // 胶囊只有一格宽，不指定 align 会被先居中（左缘落在 1.5×格宽处，
+                // 正好卡在性能/帧率之间），offset 再往上加 pillX 就整体右偏 1.5 格——
+                // 这就是「概览高亮、胶囊却在性能和帧率之间」的根因。
+                .align(Alignment.CenterStart)
+                .offset { IntOffset(pillX.fastRoundToInt(), 0) }
                 .width(itemWidth)
                 .height(barHeight)
                 .drawBackdrop(
                     backdrop = backdrop,
                     shape = { RoundedCornerShape(percent = 50) },
                     effects = {
-                        lens(10f.dp.toPx(), 14f.dp.toPx(), chromaticAberration = true)
+                        // 统一规则：静止 = 毛玻璃（blur 全额、无折射），
+                        // 拖动/触摸时折射渐入——透视只出现在交互的瞬间
+                        blur(8f.dp.toPx())
+                        lens(
+                            10f.dp.toPx() * barPress,
+                            14f.dp.toPx() * barPress,
+                            chromaticAberration = true,
+                        )
                     },
                     highlight = { Highlight.Default },
                     shadow = { Shadow(alpha = 0.10f) },

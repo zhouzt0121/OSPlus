@@ -35,8 +35,10 @@ import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
 import com.osplus.tools.ui.components.LiquidGlassButton
+import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.LiquidSlider
 import top.yukonga.miuix.kmp.basic.Text
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 /** CPU 详情：实时负载、核心簇频率、调速器切换与频率挡位锁定 */
@@ -79,9 +81,7 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
-        ),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
@@ -347,9 +347,7 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
-        ),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
@@ -525,9 +523,7 @@ fun MemDetailScreen(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
-        ),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
@@ -590,15 +586,18 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                         enabled = rootAvailable,
                     )
                     Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        LiquidGlassButton(
-                            onClick = { vm.resizeZram((sizeGb * 1024f * 1024f).toLong()) },
-                            enabled = rootAvailable,
-                        ) { Text("应用并重建") }
-                        LiquidGlassButton(
-                            onClick = { sizeGb = (mem.zramTotalKb / 1024f / 1024f).coerceIn(1f, 8f) },
-                        ) { Text("取当前值") }
-                    }
+                    LiquidNavTabs(
+                        items = listOf("应用并重建", "取当前值"),
+                        selectedIndex = -1,
+                        onSelect = {
+                            if (it == 0) {
+                                if (rootAvailable) vm.resizeZram((sizeGb * 1024f * 1024f).toLong())
+                            } else {
+                                sizeGb = (mem.zramTotalKb / 1024f / 1024f).coerceIn(1f, 8f)
+                            }
+                        },
+                        enabled = true,
+                    )
                 }
             }
         }

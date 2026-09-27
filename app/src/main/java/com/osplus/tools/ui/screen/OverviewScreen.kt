@@ -35,6 +35,7 @@ import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /**
@@ -89,6 +90,7 @@ fun OverviewScreen(
     vm: DeviceViewModel,
     onOpen: (OverviewDetail) -> Unit,
     onOpenPower: () -> Unit,
+    onOpenFps: () -> Unit,
 ) {
     val history by vm.history.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
@@ -137,7 +139,7 @@ fun OverviewScreen(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
@@ -228,7 +230,7 @@ fun OverviewScreen(
                 }
                 SectionCard(
                     modifier = Modifier.weight(1f),
-                    onClick = onOpenPower,
+                    onClick = onOpenFps,
                     contentHeight = MetricCellContentHeight,
                 ) {
                     FpsTrendCard(values = trend.map { it.fps }, axisStartLabel = fpsAxisStart)

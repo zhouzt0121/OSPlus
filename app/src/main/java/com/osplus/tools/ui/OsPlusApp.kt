@@ -17,6 +17,7 @@ import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +34,7 @@ import com.osplus.tools.ui.components.LiquidBarItem
 import com.osplus.tools.ui.components.LiquidBottomBar
 import com.osplus.tools.ui.components.OsTopBar
 import com.osplus.tools.ui.components.OsTopBarAction
+import com.osplus.tools.ui.components.OsTopBarPillAction
 import com.osplus.tools.ui.components.PageBackground
 import com.osplus.tools.ui.screen.CpuDetailScreen
 import com.osplus.tools.ui.screen.FpsScreen
@@ -159,16 +161,18 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                         backdrop = topBarBackdrop,
                         actions = {
                             if (rootTab == RootTab.Overview && route == null) {
-                                OsTopBarAction(
+                                OsTopBarPillAction(
                                     icon = Icons.Rounded.CleaningServices,
-                                    contentDescription = "清理内存",
+                                    label = "清内存",
+                                    contentDescription = "清理物理内存",
                                     enabled = rootAvailable,
                                     onClick = { viewModel.cleanMemCaches() },
                                     backdrop = topBarBackdrop,
                                 )
-                                OsTopBarAction(
-                                    icon = Icons.Rounded.Refresh,
-                                    contentDescription = "清理交换",
+                                OsTopBarPillAction(
+                                    icon = Icons.Rounded.SwapHoriz,
+                                    label = "清交换",
+                                    contentDescription = "清理交换分区",
                                     enabled = rootAvailable,
                                     onClick = { viewModel.cleanSwap() },
                                     backdrop = topBarBackdrop,
@@ -226,6 +230,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                         vm = viewModel,
                                         onOpen = { route = it.name },
                                         onOpenPower = { rootTab = RootTab.Power },
+                                        onOpenFps = { rootTab = RootTab.Fps },
                                     )
 
                                     keyTab == RootTab.Perf -> PerfScreen(viewModel) { route = it.name }

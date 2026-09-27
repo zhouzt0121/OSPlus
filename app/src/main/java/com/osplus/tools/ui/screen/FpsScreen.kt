@@ -40,7 +40,6 @@ import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.MetricChartCard
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
-import com.osplus.tools.ui.components.SegmentedTabs
 import com.osplus.tools.ui.components.SwitchRow
 import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.theme.OsText
@@ -48,7 +47,9 @@ import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
 import com.osplus.tools.ui.components.LiquidGlassButton
+import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.LiquidSlider
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 帧率记录的分析窗口 */
@@ -137,7 +138,7 @@ fun FpsScreen(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
@@ -201,14 +202,13 @@ fun FpsScreen(vm: DeviceViewModel) {
                         )
                     }
                     Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        LiquidGlassButton(onClick = { vm.exportFpsCsv() }, enabled = records.isNotEmpty()) {
-                            Text("导出 CSV")
-                        }
-                        LiquidGlassButton(onClick = { vm.clearFpsRecords() }, enabled = records.isNotEmpty()) {
-                            Text("清空记录")
-                        }
-                    }
+                    // 与底栏同语言的动作条：整条玻璃横条与页面背景明显区分
+                    LiquidNavTabs(
+                        items = listOf("导出 CSV", "清空记录"),
+                        selectedIndex = -1,
+                        onSelect = { if (records.isNotEmpty()) { if (it == 0) vm.exportFpsCsv() else vm.clearFpsRecords() } },
+                        enabled = records.isNotEmpty(),
+                    )
                     if (recording && !overlayRunning) {
                         Spacer(Modifier.height(8.dp))
                         NoticeBanner(
@@ -241,8 +241,8 @@ fun FpsScreen(vm: DeviceViewModel) {
                 Column(Modifier.padding(vertical = 4.dp)) {
                     CardSectionLabel("分析窗口")
                     Spacer(Modifier.height(6.dp))
-                    SegmentedTabs(
-                        tabs = FpsWindow.entries.map { it.label },
+                    LiquidNavTabs(
+                        items = FpsWindow.entries.map { it.label },
                         selectedIndex = window,
                         onSelect = { window = it },
                     )

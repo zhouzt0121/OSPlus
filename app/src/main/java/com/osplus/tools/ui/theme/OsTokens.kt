@@ -1,6 +1,7 @@
 package com.osplus.tools.ui.theme
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -88,11 +89,41 @@ private val DarkColors = OsColors(
 /** 主题深浅判定：以 Miuix 背景色的感知亮度为准，可同时覆盖浅色/深色/跟随系统三种模式。 */
 private fun Color.perceivedLuminance(): Float = 0.299f * red + 0.587f * green + 0.114f * blue
 
-/** 当前生效的配色令牌 */
+/**
+ * 当前生效的配色令牌。
+ *
+ * **不再使用两套写死的色板**：中性色板只作为语义色（图表橙/绿/红等）的基底，
+ * 背景 / 卡片 / 文字 / 主色一律从 Miuix 实际生效的配色派生。
+ * 这样：
+ * - Monet（壁纸取色）模式下，Miuix 走 `platformDynamicColors()` 拿到系统
+ *   Material You 调色板，本函数随之输出壁纸色——此前主色写死为固定蓝，
+ *   取色开关形同虚设，这是「壁纸取色无效果」的根因；
+ * - 手动选择「深色」时，文字 / 卡片 / 描边与 Miuix 的深色 scheme 同源，
+ *   不再出现「主题是深色、令牌还是浅色」的割裂（此前深色发灰、对比度差的根因）。
+ */
 @Composable
 fun osColors(): OsColors {
-    val bg = MiuixTheme.colorScheme.background
-    return if (bg.perceivedLuminance() < 0.5f) DarkColors else LightColors
+    val scheme = MiuixTheme.colorScheme
+    val base = if (scheme.background.perceivedLuminance() < 0.5f) DarkColors else LightColors
+    return remember(
+        scheme.background, scheme.surface, scheme.surfaceVariant, scheme.primary,
+        scheme.primaryContainer, scheme.onBackground, scheme.onSurfaceSecondary,
+        scheme.onSurfaceVariantSummary,
+    ) {
+        base.copy(
+            background = scheme.background,
+            card = scheme.surface,
+            cardAlt = scheme.surfaceVariant,
+            cardElevated = scheme.surfaceVariant,
+            hairline = scheme.onBackground.copy(alpha = if (base.isDark) 0.10f else 0.08f),
+            track = scheme.onBackground.copy(alpha = if (base.isDark) 0.09f else 0.07f),
+            textPrimary = scheme.onBackground,
+            textSecondary = scheme.onSurfaceSecondary,
+            textTertiary = scheme.onSurfaceVariantSummary,
+            primary = scheme.primary,
+            primarySoft = scheme.primaryContainer,
+        )
+    }
 }
 
 /** 当前是否为深色主题 */
