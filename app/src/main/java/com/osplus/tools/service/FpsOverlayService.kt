@@ -308,6 +308,17 @@ class FpsOverlayService : Service() {
      * 通知渠道走标准 [android.app.NotificationChannel]（OsPlusApplication 里注册），
      * 更新只走 [NotificationManager.notify]，保持完全原生通知。
      */
+    /**
+     * 构建通知。
+     *
+     * Android 16+（API 36）：**实时任务通知（Live Updates / promoted ongoing）**——
+     * 走系统标准 [Notification.MetricStyle]（CPU/GPU/内存五项指标），
+     * 请求系统提升为实时任务卡片：通知抽屉顶部、锁屏与状态栏芯片常驻展示。
+     * 官方明确 promoted 通知**不得携带 customContentView（RemoteViews）**，
+     * 否则直接失去资格，因此此分支不挂自定义视图。
+     *
+     * Android 12–15：系统没有实时任务机制，回退为 RemoteViews 凝光玻璃卡片。
+     */
     private fun buildNotification(): Notification {
         val intent = PendingIntent.getActivity(
             this,
@@ -315,20 +326,64 @@ class FpsOverlayService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val views = RemoteViews(packageName, R.layout.notification_liquid_card)
-        views.setImageViewBitmap(R.id.notif_glass_bg, glassBitmap())
-        applyNotificationText(views)
-        // Android 12+ 标准做法：原生 Notification.Builder + DecoratedCustomViewStyle
-        // （系统会为自定义视图套上标准通知外壳），小图标用单色原生 ic_notify，
-        // 严禁彩色 mipmap——会被状态栏渲染成白色色块
-        return Notification.Builder(this, OsPlusApplication.CHANNEL_FLUID)
+        val builder = Notification.Builder(this, OsPlusApplication.CHANNEL_FLUID)
             .setSmallIcon(R.drawable.ic_notify)
-            .setCustomContentView(views)
-            .setCustomBigContentView(views)
-            .setStyle(Notification.DecoratedCustomViewStyle())
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(intent)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            val s = LiveMetrics.snapshot.value
+            val memText = if (s.memTotalKb > 0) {
+                "%.1f/%.1fGB".format(s.memAvailKb / 1048576f, s.memTotalKb / 1048576f)
+            } else {
+                "--"
+            }
+            val style = Notification.MetricStyle()
+                .addMetric(
+                    Notification.Metric(
+                        Notification.Metric.FixedInt(s.cpuLoad.roundToInt(), "%"),
+                        "CPU 占用",
+                    ),
+                )
+                .addMetric(
+                    Notification.Metric(
+                        Notification.Metric.FixedText(if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"),
+                        "CPU 频率",
+                    ),
+                )
+                .addMetric(
+                    Notification.Metric(
+                        Notification.Metric.FixedInt(if (s.gpuLoad >= 0) s.gpuLoad else 0, "%"),
+                        "GPU 占用",
+                    ),
+                )
+                .addMetric(
+                    Notification.Metric(
+                        Notification.Metric.FixedText(if (s.gpuMhz > 0) fmtFreq(s.gpuMhz) else "--"),
+                        "GPU 频率",
+                    ),
+                )
+                .addMetric(
+                    Notification.Metric(Notification.Metric.FixedText(memText), "内存 可用/全部"),
+                )
+                .setCriticalMetric(0)
+            return builder
+                .setContentTitle("OSPlus 实时状态")
+                .setStyle(style)
+                .setRequestPromotedOngoing(true)
+                // 状态栏芯片上的关键数值：CPU 占用最直观
+                .setShortCriticalText("${s.cpuLoad.roundToInt()}%")
+                .build()
+        }
+        val views = RemoteViews(packageName, R.layout.notification_liquid_card)
+        views.setImageViewBitmap(R.id.notif_glass_bg, glassBitmap())
+        applyNotificationText(views)
+        // DecoratedCustomViewStyle 让系统为自定义视图套上标准通知外壳；
+        // 小图标必须用单色原生 ic_notify，彩色 mipmap 会被状态栏渲染成白色色块
+        return builder
+            .setCustomContentView(views)
+            .setCustomBigContentView(views)
+            .setStyle(Notification.DecoratedCustomViewStyle())
             .build()
     }
 

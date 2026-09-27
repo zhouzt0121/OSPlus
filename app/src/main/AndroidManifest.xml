@@ -12,6 +12,7 @@
 
     <!-- 通知（前台服务 / 帧率悬浮窗） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
 
     <!-- 前台服务：帧率悬浮窗常驻 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

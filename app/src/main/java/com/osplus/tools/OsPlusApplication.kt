@@ -46,6 +46,7 @@ class OsPlusApplication : Application() {
 
     companion object {
         const val CHANNEL_FPS = "osplus_fps"
-        const val CHANNEL_FLUID = "fluid_cloud_task"
+        // v2：初版通道曾被用户在通知栏降级锁定（user-locked LOW），换新 id 恢复高优先级
+        const val CHANNEL_FLUID = "fluid_cloud_task_v2"
     }
 }
