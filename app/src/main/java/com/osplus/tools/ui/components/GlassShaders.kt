@@ -81,6 +81,17 @@ import androidx.compose.ui.graphics.asComposeRenderEffect
 private const val REFRACTION_AGSL = """
 uniform shader child;
 uniform float2 uSize;
+// 形状在着色器输入里的左上角偏移。
+//
+// **这一项漏了会画出一条穿在玻璃中间的亮线。**
+// drawBackdrop 为了让模糊与折射能采样到形状外侧，会把输入纹理向外扩一圈 padding，
+// 于是着色器里的 coord 是「含 padding」的。不减掉它，SDF 算出来的形状就比实际小一圈，
+// 它的「下边缘高光/阴影带」会落到真实控件的中间——看起来就是玻璃中间横着一条白线。
+//
+// 参考实现（Kyant0/Backdrop）同样是这么做的：
+//   shader.setFloatUniform("offset", -padding, -padding)
+//   shader.setFloatUniform("size", size.width, size.height)
+uniform float2 uOffset;
 uniform float uRadius;
 uniform float uBand;
 uniform float uStrength;
@@ -147,7 +158,8 @@ half4 finish(half4 c, float sd) {
 
 half4 main(float2 coord) {
     float2 hs = uSize * 0.5;
-    float2 p = coord - hs;
+    // 先补回 padding 偏移，才是「以形状左上角为原点」的坐标
+    float2 p = (coord + uOffset) - hs;
 
     // 圆角矩形 SDF：轮廓上为 0，内部为负。
     // 不用「到中心的距离」是因为它在四条边的中点只有 0.707、只有四角才到 1——
@@ -276,12 +288,16 @@ private fun buildRefraction(
     widthPx: Float,
     heightPx: Float,
     cornerRadiusPx: Float,
+    paddingPx: Float,
 ): PlatformRenderEffect? {
     if (!runtimeShaderSupported()) return null
     if (widthPx <= 0f || heightPx <= 0f) return null
     return runCatching {
         val shader = PlatformRuntimeShader(REFRACTION_AGSL)
         shader.setFloatUniform("uSize", widthPx, heightPx)
+        // 形状在输入纹理里被 padding 推离了原点，SDF 必须减掉这段偏移，
+        // 否则边缘高光/阴影会落到控件中间（见 uOffset 的说明）。
+        shader.setFloatUniform("uOffset", -paddingPx, -paddingPx)
         // 半径超过短边的一半时 SDF 会自交（退化成椭圆角），夹一下更安全
         val maxRadius = minOf(widthPx, heightPx) * 0.5f
         shader.setFloatUniform("uRadius", cornerRadiusPx.coerceIn(0f, maxRadius))
@@ -315,10 +331,11 @@ fun buildLiquidGlassEffect(
     widthPx: Float,
     heightPx: Float,
     cornerRadiusPx: Float,
+    paddingPx: Float = 0f,
 ): RenderEffect? {
     if (!runtimeShaderSupported()) return null
     if (widthPx <= 0f || heightPx <= 0f) return null
-    val refraction = buildRefraction(widthPx, heightPx, cornerRadiusPx) ?: return null
+    val refraction = buildRefraction(widthPx, heightPx, cornerRadiusPx, paddingPx) ?: return null
     return runCatching {
         val blur = PlatformRenderEffect.createBlurEffect(
             blurPx,

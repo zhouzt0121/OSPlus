@@ -52,6 +52,7 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.blur
 import top.yukonga.miuix.kmp.blur.drawBackdrop
+import top.yukonga.miuix.kmp.blur.highlight.Highlight
 
 /**
  * 液态玻璃的背景模糊半径。
@@ -101,6 +102,7 @@ fun OsFloatingBottomBar(
     modifier: Modifier = Modifier,
     backdrop: LayerBackdrop? = null,
 ) {
+    val c = osColors()
     val barShape = RoundedCornerShape(GlassCornerRadius)
     val blurPx = with(LocalDensity.current) { GlassBlurRadius.toPx() }
     val cornerRadiusPx = with(LocalDensity.current) { GlassCornerRadius.toPx() }
@@ -131,22 +133,33 @@ fun OsFloatingBottomBar(
                                 blur(blurPx)
                                 // 再用「模糊 → 折射」整链覆盖掉它写进去的纯模糊。
                                 // 构造失败（AGSL 编译不过）时保留 blur() 的结果降级为毛玻璃。
-                                buildLiquidGlassEffect(blurPx, size.width, size.height, cornerRadiusPx)
-                                    ?.let { renderEffect = it }
+                                buildLiquidGlassEffect(
+                                    blurPx = blurPx,
+                                    widthPx = size.width,
+                                    heightPx = size.height,
+                                    cornerRadiusPx = cornerRadiusPx,
+                                    paddingPx = padding,
+                                )?.let { renderEffect = it }
                             },
+                            // 棱光交给 drawBackdrop，不再自己用 Compose 的
+                            // border / drawWithContent 在外面画一圈。
+                            //
+                            // 官方示例（LiquidBottomTabs）就是这么做的：
+                            //   highlight = { Highlight.Default.copy(alpha = progress) }
+                            // 自绘棱光与 drawBackdrop 的渲染几何对不上——
+                            // 实测会在玻璃中部留下一条边缘锐利的白色横带，
+                            // 逐层移除 Compose 侧的高光/阴影/描边都无法消除它。
+                            highlight = { Highlight(alpha = 0.10f) },
+                            // 玻璃体同样交给它，而不是在外面再叠一层 .background()。
+                            onDrawSurface = { drawRect(c.card.copy(alpha = 0.40f)) },
                         )
                     } else {
+                        // 取不到背景（旧机型 / backdrop 为 null）时退回高不透明实底，
+                        // 否则没有底色的玻璃会让图标糊在页面内容上。
                         Modifier
+                            .clip(barShape)
+                            .background(c.card.copy(alpha = 0.94f))
                     }
-                )
-                .liquidGlass(
-                    shape = barShape,
-                    cornerRadius = GlassCornerRadius,
-                    // 有真实模糊时着色要压到 0.4 附近：玻璃盖得越实、背景越暗，
-                    // 折射位移就越没有参照物，整条折射链会白做。
-                    // 取不到背景（旧机型 / backdrop 为 null）时反而要提高不透明度，
-                    // 否则没有底色的玻璃会让图标糊在页面内容上。
-                    alpha = if (backdrop != null) 0.40f else 0.94f,
                 )
                 .padding(horizontal = 8.dp, vertical = 9.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
