@@ -149,22 +149,17 @@ fun FpsScreen(vm: DeviceViewModel) {
                     SwitchRow(
                         label = "开始记录",
                         summary = "每秒留档一条：帧率 + 每核占用/频率 + GPU + 内存 + 功耗 + 温度" +
-                            "（也可轻点桌面悬浮窗开关）",
+                            "（也可点实时任务通知上的按钮）",
                         checked = recording,
                         onCheckedChange = {
                             if (it) vm.startFpsRecording() else vm.stopFpsRecording()
                         },
                     )
                     SwitchRow(
-                        label = "悬浮窗显示并跨应用记录",
-                        summary = if (overlayGranted) {
-                            "在其他应用上层显示帧率；开启后即使切到别的应用，" +
-                                "帧率与系统指标仍会持续记录（前台服务保活）"
-                        } else {
-                            "需先授予悬浮窗权限"
-                        },
+                        label = "实时任务通知监视",
+                        summary = "状态栏芯片常驻显示帧率，通知卡片实时呈现帧率与 CPU/GPU/内存指标；" +
+                            "无需悬浮窗权限，前台服务跨应用保活，通知上可直接开始 / 停止记录",
                         checked = overlayRunning,
-                        enabled = overlayGranted,
                         onCheckedChange = { on ->
                             // 不直接改本地状态：状态由服务真实运行情况回写，
                             // 否则启动失败时开关会显示成「已开启」的假状态
@@ -173,34 +168,12 @@ fun FpsScreen(vm: DeviceViewModel) {
                             else FpsOverlayService.stop(context)
                         },
                     )
-                    if (overlayGranted) {
-                        Spacer(Modifier.height(8.dp))
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "悬浮窗不透明度",
-                                style = OsText.caption,
-                                color = c.textSecondary,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                text = "%.0f%%".format(overlayAlpha * 100f),
-                                style = OsText.value,
-                                color = c.textPrimary,
-                                fontWeight = FontWeight.Medium,
-                            )
-                        }
-                        LiquidSlider(
-                            value = overlayAlpha,
-                            onValueChange = { vm.setOverlayAlpha(it) },
-                            valueRange = FpsOverlayState.MIN_ALPHA..1f,
-                        )
-                        Text(
-                            text = "悬浮窗上轻点一下即可开始 / 停止记录（记录中数值前会显示红点），" +
-                                "长按或拖动可移动到任意位置，位置与不透明度都会被记住。",
-                            style = OsText.micro,
-                            color = c.textTertiary,
-                        )
-                    }
+                    Text(
+                        text = "已用实时任务通知代替悬浮窗：通知上点「开始记录 / 停止记录」即可留档，" +
+                            "状态栏芯片随时显示当前帧率。",
+                        style = OsText.micro,
+                        color = c.textTertiary,
+                    )
                     Spacer(Modifier.height(10.dp))
                     // 与底栏同语言的动作条：整条玻璃横条与页面背景明显区分
                     LiquidNavTabs(
@@ -209,25 +182,6 @@ fun FpsScreen(vm: DeviceViewModel) {
                         onSelect = { if (records.isNotEmpty()) { if (it == 0) vm.exportFpsCsv() else vm.clearFpsRecords() } },
                         enabled = records.isNotEmpty(),
                     )
-                    if (recording && !overlayRunning) {
-                        Spacer(Modifier.height(8.dp))
-                        NoticeBanner(
-                            text = "建议同时开启悬浮窗：未开启时切到其他应用，本应用可能被系统冻结，" +
-                                "帧率与系统指标会停止采集。开启后由前台服务保活，可跨应用持续记录。",
-                        )
-                    }
-                    if (!overlayGranted) {
-                        Spacer(Modifier.height(8.dp))
-                        LiquidGlassButton(onClick = {
-                            runCatching {
-                                context.startActivity(
-                                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
-                                        .setData(Uri.parse("package:${context.packageName}"))
-                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                )
-                            }
-                        }) { Text("授权悬浮窗") }
-                    }
                     exportPath?.let {
                         Spacer(Modifier.height(8.dp))
                         NoticeBanner(text = "已导出到 $it", accent = ChartColors.gpu)

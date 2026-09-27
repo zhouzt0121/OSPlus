@@ -16,6 +16,7 @@ import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
@@ -72,18 +73,24 @@ class FpsOverlayService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 通知 action：直接在实时任务通知上开始 / 停止帧率记录
+        if (intent?.action == ACTION_TOGGLE_RECORDING) {
+            FpsRecorder.toggleRecording()
+            updateNotification()
+        }
+        return START_STICKY
+    }
+
     override fun onCreate() {
         super.onCreate()
         startForeground(NOTIFICATION_ID, buildNotification())
-        if (!Settings.canDrawOverlays(this)) {
-            stopSelf()
-            return
-        }
         FpsOverlayState.set(true)
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         userAlpha = Preferences.overlayAlpha(this).coerceIn(FpsOverlayState.MIN_ALPHA, 1f)
         FpsOverlayState.setAlpha(userAlpha)
-        addOverlay()
+        // 悬浮窗已由实时任务通知代替：跨应用监视不再依赖悬浮窗窗口，
+        // 也就不再需要 SYSTEM_ALERT_WINDOW 权限。addOverlay 代码保留以备回滚。
 
         // 与录制功能共用同一个逐帧统计器，避免两套 Choreographer 互相干扰
         FpsRecorder.overlayHolds = true
@@ -333,12 +340,31 @@ class FpsOverlayService : Service() {
             .setContentIntent(intent)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
             val s = LiveMetrics.snapshot.value
+            val fps = FpsRecorder.sample.value.fps
+            val recording = FpsRecorder.recording.value
             val memText = if (s.memTotalKb > 0) {
                 "%.1f/%.1fGB".format(s.memAvailKb / 1048576f, s.memTotalKb / 1048576f)
             } else {
                 "--"
             }
+            val toggleIntent = PendingIntent.getService(
+                this,
+                1,
+                Intent(this, FpsOverlayService::class.java).setAction(ACTION_TOGGLE_RECORDING),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val toggleAction = Notification.Action.Builder(
+                Icon.createWithResource(this, R.drawable.ic_notify),
+                if (recording) "停止记录" else "开始记录",
+                toggleIntent,
+            ).build()
             val style = Notification.MetricStyle()
+                .addMetric(
+                    Notification.Metric(
+                        Notification.Metric.FixedFloat(fps, "FPS"),
+                        "帧率",
+                    ),
+                )
                 .addMetric(
                     Notification.Metric(
                         Notification.Metric.FixedInt(s.cpuLoad.roundToInt(), "%"),
@@ -368,11 +394,12 @@ class FpsOverlayService : Service() {
                 )
                 .setCriticalMetric(0)
             return builder
-                .setContentTitle("OSPlus 实时状态")
+                .setContentTitle(if (recording) "OSPlus 正在记录" else "OSPlus 实时状态")
                 .setStyle(style)
                 .setRequestPromotedOngoing(true)
-                // 状态栏芯片上的关键数值：CPU 占用最直观
-                .setShortCriticalText("${s.cpuLoad.roundToInt()}%")
+                // 状态栏芯片常驻显示帧率（代替悬浮窗的跨应用帧率读取）
+                .setShortCriticalText("%.0fFPS".format(fps))
+                .addAction(toggleAction)
                 .build()
         }
         val views = RemoteViews(packageName, R.layout.notification_liquid_card)
@@ -502,6 +529,9 @@ class FpsOverlayService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 0x0521
+
+        /** 通知「开始/停止记录」按钮的 action */
+        private const val ACTION_TOGGLE_RECORDING = "com.osplus.tools.action.TOGGLE_FPS_RECORDING"
 
         /** 判定为「拖动」而非「点击」的位移阈值（像素） */
         private const val DRAG_SLOP = 8f
