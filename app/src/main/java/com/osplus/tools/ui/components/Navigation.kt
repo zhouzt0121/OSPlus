@@ -158,20 +158,28 @@ fun OsTopBarAction(
     // onDrawSurface 的 lambda 是 DrawScope 作用域、不是可组合作用域，
     // 在里面调 @Composable 的 LiquidGlassColors.container() 会编译不过。
     val container = LiquidGlassColors.container()
+    // 透视只在按压时出现，静止时是纯毛玻璃（与底栏/开关/按钮统一）
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val press by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f),
+        label = "topBarPress",
+    )
     Box(
         modifier = modifier
             .size(TopBarActionSize)
             .then(
                 if (backdrop != null) {
-                    // 按官方 LiquidButton 的写法：vibrancy + blur + lens，
-                    // 高光与玻璃体都交给 drawBackdrop，不在外面自绘任何棱光/描边。
+                    // 官方 LiquidButton 的写法：vibrancy + blur 常开，
+                    // lens 随按压渐入；高光与玻璃体都交给 drawBackdrop。
                     Modifier.drawBackdrop(
                         backdrop = backdrop,
                         shape = { actionShape },
                         effects = {
                             vibrancy()
                             blur(2f.dp.toPx())
-                            lens(12f.dp.toPx(), 24f.dp.toPx())
+                            lens(12f.dp.toPx() * press, 24f.dp.toPx() * press)
                         },
                         highlight = { Highlight.Default },
                         onDrawSurface = { drawRect(container) },
@@ -183,7 +191,13 @@ fun OsTopBarAction(
                         .background(LiquidGlassColors.container())
                 }
             )
-            .then(if (enabled) Modifier.pressable(onClick) else Modifier)
+            .then(
+                if (enabled) {
+                    Modifier.pressable(interactionSource = interaction, onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
             .alpha(if (enabled) 1f else 0.4f),
         contentAlignment = Alignment.Center,
     ) {
