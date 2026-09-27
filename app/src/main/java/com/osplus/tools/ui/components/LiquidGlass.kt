@@ -620,6 +620,11 @@ fun LiquidBottomBar(
         )
         Box(
             Modifier
+                // 必须显式对齐到左缘：BoxWithConstraints 是 contentAlignment = Center，
+                // 胶囊只有一格宽，不指定 align 会被先居中（左缘落在 1.5×格宽处，
+                // 正好卡在性能/帧率之间），offset 再往上加 pillX 就整体右偏 1.5 格——
+                // 这就是「概览高亮、胶囊却在性能和帧率之间」的根因。
+                .align(Alignment.CenterStart)
                 .offset { IntOffset(pillX.fastRoundToInt(), 0) }
                 .width(itemWidth)
                 .height(barHeight)
