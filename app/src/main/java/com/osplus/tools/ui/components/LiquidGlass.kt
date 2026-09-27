@@ -504,8 +504,8 @@ private fun Modifier.glassStaticSurface(
  * - 点按：`detectTapGestures` 按落点 x 算出命中的 tab——必须独立于拖动检测，
  *   因为 `detectHorizontalDragGestures` 的回调只在越过横向 touch slop 后触发，
  *   干净的「点一下」不会走到它的 onDragEnd
- * - 拖动：`detectHorizontalDragGestures`，拖动位移 ≥ 12px 时按方向
- *   （左拖 → 右一个，右拖 → 左一个）切到相邻 tab
+ * - 拖动：`detectHorizontalDragGestures`，位移 ≥ 12px 时按胶囊松手落位
+ *   取整选择目标页——拖过几格就切几格，胶囊停在哪页就选中哪页
  * - 选中胶囊（单一覆盖层，非逐 item 自绘）的 spring 动画同时服务两者：
  *   拖动时经弹簧阻尼跟手，切换 tab 时平滑滑到新位置
  *
@@ -549,9 +549,12 @@ fun LiquidBottomBar(
                     onHorizontalDrag = { _, dragAmount -> dragOffsetPx += dragAmount },
                     onDragEnd = {
                         if (kotlin.math.abs(dragOffsetPx) >= 12f) {
-                            // 视为拖动：左拖→右一个、右拖→左一个
-                            val dir = if (dragOffsetPx < 0f) 1 else -1
-                            val next = (currentSelected + dir).coerceIn(0, itemCount - 1)
+                            // 拖到哪一格就切到哪一格：按胶囊松手位置四舍五入取整，
+                            // 可一次跨多格（拖远时不再是只切相邻页导致胶囊回弹脱节）
+                            val cellW = size.width / itemCount.toFloat()
+                            val next = (currentSelected +
+                                kotlin.math.round(dragOffsetPx / cellW).toInt())
+                                .coerceIn(0, itemCount - 1)
                             if (next != currentSelected) currentOnSelect(next)
                         } else {
                             // 越过 touch slop 但位移不足：按起始落点视作点按
