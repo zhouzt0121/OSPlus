@@ -85,5 +85,17 @@ dependencies {
     // 模糊 / 液态玻璃（需要 minSdk 33）
     implementation("top.yukonga.miuix.kmp:miuix-blur-android:0.9.4")
 
+    // Kyant0 官方液态玻璃库（AndroidLiquidGlass / Backdrop）。
+    //
+    // 之所以换到它而不是继续用 miuix-blur：官方组件
+    // （LiquidBottomTabs / LiquidButton / LiquidToggle / LiquidSlider）
+    // 用的就是这套 API，而 miuix-blur 缺了其中三块——
+    // 没有 effects 包（vibrancy）、没有 shadow 包（Shadow / InnerShadow）、
+    // Highlight 的预置样式也不一样。
+    // 缺了这些就只能自己用 Compose 画，而自绘层与 drawBackdrop 的渲染几何对不上，
+    // 之前底栏中间那条白色横带就是这么来的。
+    implementation("io.github.kyant0:backdrop:2.0.1")
+    implementation("io.github.kyant0:capsule:2.1.3")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

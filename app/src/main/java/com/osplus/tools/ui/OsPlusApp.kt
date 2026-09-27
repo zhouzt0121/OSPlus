@@ -29,8 +29,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigationevent.NavigationEventInfo
 import androidx.navigationevent.compose.NavigationBackHandler
 import androidx.navigationevent.compose.rememberNavigationEventState
-import com.osplus.tools.ui.components.BarItem
-import com.osplus.tools.ui.components.OsFloatingBottomBar
+import com.osplus.tools.ui.components.LiquidBarItem
+import com.osplus.tools.ui.components.LiquidBottomBar
 import com.osplus.tools.ui.components.OsTopBar
 import com.osplus.tools.ui.components.OsTopBarAction
 import com.osplus.tools.ui.components.PageBackground
@@ -48,8 +48,8 @@ import com.osplus.tools.ui.screen.SettingsScreen
 import com.osplus.tools.ui.theme.OSPlusTheme
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
-import top.yukonga.miuix.kmp.blur.layerBackdrop
-import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 
 /**
  * 底部悬浮导航的一级页面。
@@ -219,15 +219,15 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                 }
             }
 
-            OsFloatingBottomBar(
+            LiquidBottomBar(
                 items = listOf(
                     // 用 Filled 而不是 Rounded：底栏图标只有 22dp，
                     // 描边式在这么小的尺寸上线条会细到发虚、四个图标粗细也不一致；
                     // 填充式在 22dp 下的辨识度明显更高。
-                    BarItem("概览", Icons.Filled.Dashboard),
-                    BarItem("性能", Icons.Filled.Speed),
-                    BarItem("帧率", Icons.AutoMirrored.Filled.ShowChart),
-                    BarItem("电源", Icons.Filled.BatteryFull),
+                    LiquidBarItem("概览", Icons.Filled.Dashboard),
+                    LiquidBarItem("性能", Icons.Filled.Speed),
+                    LiquidBarItem("帧率", Icons.AutoMirrored.Filled.ShowChart),
+                    LiquidBarItem("电源", Icons.Filled.BatteryFull),
                 ),
                 selectedIndex = rootTab.ordinal,
                 onSelect = {
