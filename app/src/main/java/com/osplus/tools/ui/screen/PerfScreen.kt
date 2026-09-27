@@ -47,6 +47,7 @@ import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 趋势观察窗口的候选长度（秒），与采样间隔 1 秒一一对应 */
@@ -108,7 +109,7 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (!rootAvailable) {

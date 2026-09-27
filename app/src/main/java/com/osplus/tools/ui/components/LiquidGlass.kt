@@ -36,10 +36,13 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
@@ -271,16 +274,15 @@ fun LiquidSlider(
         val trackWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
         var didDrag by remember { mutableStateOf(false) }
 
-        // 轨道：底色 + 已填充段。官方用 `layout` 把填充段裁到当前进度宽，
-        // 比用 Modifier.width 好在不会触发布局重排。
+        // 点按热区放大到整行 24dp 高：原来 pointerInput 挂在 6dp 的轨道条上，
+        // 真机上手指很难点中这条细缝。视觉轨道仍是 6dp，只是命中区变大。
         Box(
             Modifier
-                .clip(shape)
-                .background(trackColor)
+                .fillMaxWidth()
+                .height(24.dp)
                 .pointerInput(enabled) {
                     detectTapGestures { pos ->
                         if (enabled) {
-                            didDrag = true
                             // 不用 lerp()：当前作用域里 lerp 解析到的是 Color 版
                             // （给 LiquidToggle 的轨道混色用的），这里要的是 Float 版。
                             // 直接算比加别名 import 更不容易踩到重载歧义。
@@ -292,10 +294,17 @@ fun LiquidSlider(
                             onValueChangeFinished()
                         }
                     }
-                }
-                .height(6.dp)
-                .fillMaxWidth()
-        )
+                },
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Box(
+                Modifier
+                    .clip(shape)
+                    .background(trackColor)
+                    .height(6.dp)
+                    .fillMaxWidth()
+            )
+        }
         Box(
             Modifier
                 .clip(shape)
@@ -491,11 +500,14 @@ private fun Modifier.glassStaticSurface(
  *
  * ### 点击 + 横向拖动切换（统一手势）
  *
- * 一个 `detectHorizontalDragGestures` 同时承接「点按选 tab」与「横向拖动切 tab」：
- * - 拖动位移 < 12px 视为点按 → 按落点 x 算出命中的 tab
- * - 否则按拖动方向切到相邻 tab（左拖 → 右一个，右拖 → 左一个）
- * - 选中胶囊（单一覆盖层，非逐 item 自绘）用 `animatedOffset` 跟随手指，
- *   松手归零、由 spring 弹回新位置——这层「跟随」就是官方 `InteractiveHighlight` 的等价替代。
+ * 点按与横向拖动由两个 pointerInput 分工承接：
+ * - 点按：`detectTapGestures` 按落点 x 算出命中的 tab——必须独立于拖动检测，
+ *   因为 `detectHorizontalDragGestures` 的回调只在越过横向 touch slop 后触发，
+ *   干净的「点一下」不会走到它的 onDragEnd
+ * - 拖动：`detectHorizontalDragGestures`，拖动位移 ≥ 12px 时按方向
+ *   （左拖 → 右一个，右拖 → 左一个）切到相邻 tab
+ * - 选中胶囊（单一覆盖层，非逐 item 自绘）的 spring 动画同时服务两者：
+ *   拖动时经弹簧阻尼跟手，切换 tab 时平滑滑到新位置
  *
  * 用 `rememberUpdatedState` 把 `selectedIndex` / `onSelect` 的最新值喂给手势闭包，
  * 这样 `pointerInput` 只需建一次（key = Unit），避免每次选中重建手势把进行中的拖动打断。
@@ -521,40 +533,53 @@ fun LiquidBottomBar(
 
     // 拖动偏移（px），跟随手指；松手归零 → spring 弹回当前选中位
     var dragOffsetPx by remember { mutableStateOf(0f) }
-    val animatedOffset by animateFloatAsState(
-        targetValue = dragOffsetPx,
-        animationSpec = spring(dampingRatio = 0.82f, stiffness = 520f),
-        label = "barDragOffset",
-    )
     // 点按落点的 x（px），用于判定命中哪个 tab
     var tapStartX by remember { mutableStateOf(0f) }
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
+            // edge-to-edge 下必须避让系统导航栏：三键导航（~48dp）会把整条压在
+            // 按键下面导致点不到，手势导航也会与底部提示条抢触摸。
+            .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(horizontal = 12.dp, vertical = 10.dp)
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragStart = { tapStartX = it.x },
                     onHorizontalDrag = { _, dragAmount -> dragOffsetPx += dragAmount },
                     onDragEnd = {
-                        val itemWidthPx = size.width / itemCount.toFloat()
-                        if (kotlin.math.abs(dragOffsetPx) < 12f) {
-                            // 视为点按：落点在第几个 tab
-                            val idx = (tapStartX / itemWidthPx)
-                                .toInt()
-                                .coerceIn(0, itemCount - 1)
-                            if (idx != currentSelected) currentOnSelect(idx)
-                        } else {
+                        if (kotlin.math.abs(dragOffsetPx) >= 12f) {
                             // 视为拖动：左拖→右一个、右拖→左一个
                             val dir = if (dragOffsetPx < 0f) 1 else -1
                             val next = (currentSelected + dir).coerceIn(0, itemCount - 1)
                             if (next != currentSelected) currentOnSelect(next)
+                        } else {
+                            // 越过 touch slop 但位移不足：按起始落点视作点按
+                            val itemWidthPx = size.width / itemCount.toFloat()
+                            val idx = (tapStartX / itemWidthPx)
+                                .toInt()
+                                .coerceIn(0, itemCount - 1)
+                            if (idx != currentSelected) currentOnSelect(idx)
                         }
                         dragOffsetPx = 0f
                     },
                     onDragCancel = { dragOffsetPx = 0f },
                 )
+            }
+            // 点按检测必须独立于拖动检测：detectHorizontalDragGestures 的
+            // onDragStart/onDragEnd 只在横向越过 touch slop 后才回调，
+            // 干净的「点一下」会以 onDragCancel 收场——之前把选 tab 写在
+            // onDragEnd 里，结果整个底栏只能拖、不能点。
+            // 这个 pointerInput 放在拖动检测之后：真拖动时拖动检测先消费事件，
+            // 点按检测看到已消费的移动会自动放弃，两种手势互不打架。
+            .pointerInput(Unit) {
+                detectTapGestures { pos ->
+                    val itemWidthPx = size.width / itemCount.toFloat()
+                    val idx = (pos.x / itemWidthPx)
+                        .toInt()
+                        .coerceIn(0, itemCount - 1)
+                    if (idx != currentSelected) currentOnSelect(idx)
+                }
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -582,12 +607,20 @@ fun LiquidBottomBar(
                 ),
         )
 
-        // 选中胶囊（单一覆盖层，跟随手指）
-        val pillX = (selectedIndex * itemWidthPx + animatedOffset)
+        // 选中胶囊（单一覆盖层）。
+        // 拖动时 dragOffsetPx 让它跟手；切换 tab 时目标位置变化，
+        // 由同一个 spring 平滑滑过去——之前只动画「拖动偏移」，
+        // 点选其他 tab 时胶囊瞬间跳位，观感是「闪现」。
+        val pillTarget = (selectedIndex * itemWidthPx + dragOffsetPx)
             .coerceIn(0f, totalWidthPx - itemWidthPx)
+        val pillX by animateFloatAsState(
+            targetValue = pillTarget,
+            animationSpec = spring(dampingRatio = 0.82f, stiffness = 520f),
+            label = "barPillX",
+        )
         Box(
             Modifier
-                .offset { IntOffset(pillX.toInt(), 0) }
+                .offset { IntOffset(pillX.fastRoundToInt(), 0) }
                 .width(itemWidth)
                 .height(barHeight)
                 .drawBackdrop(

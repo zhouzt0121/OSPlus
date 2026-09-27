@@ -49,6 +49,7 @@ import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
 import com.osplus.tools.ui.components.LiquidGlassButton
 import com.osplus.tools.ui.components.LiquidSlider
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 帧率记录的分析窗口 */
@@ -137,7 +138,7 @@ fun FpsScreen(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {

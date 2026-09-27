@@ -18,8 +18,8 @@ android {
         //        6 处 miuix Slider 改用官方 LiquidSlider
 // 1.5.2：底栏加横向拖动切换（点击 + 拖动统一手势；选中胶囊跟随手指）
         // versionCode 递增以便覆盖安装已发布的 1.2.0（code 4）
-        versionCode = 9
-        versionName = "1.5.2"
+        versionCode = 10
+        versionName = "1.5.3"
     }
 
     buildFeatures {

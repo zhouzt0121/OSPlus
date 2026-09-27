@@ -9,11 +9,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -525,6 +529,20 @@ fun NoticeBanner(
 
 /** 健康结论的严重程度 */
 enum class HealthLevel { Ok, Warn, Danger }
+
+/**
+ * 各级页面 LazyColumn 的统一 contentPadding。
+ *
+ * 底部 = 悬浮底栏的让位高度（栏体 64dp + 上下 10dp padding + 余量 ≈ 104dp）
+ * **再叠加系统导航栏内边距**——底栏自身用 `windowInsetsPadding(navigationBars)`
+ * 避让系统导航栏后整体上移，列表的让位高度也要跟着加，否则三键导航的设备上
+ * 最后一张卡片仍会被底栏遮住。
+ */
+@Composable
+fun bottomBarContentPadding(): PaddingValues {
+    val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    return PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp + navBottom)
+}
 
 /**
  * 健康结论条。

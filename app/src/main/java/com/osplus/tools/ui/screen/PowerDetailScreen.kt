@@ -49,6 +49,7 @@ import com.osplus.tools.vm.DeviceViewModel
 import com.osplus.tools.ui.components.LiquidGlassButton
 import com.osplus.tools.ui.components.LiquidSlider
 import top.yukonga.miuix.kmp.basic.Text
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -87,9 +88,7 @@ private fun PowerUsageTab(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
-        ),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (!hasAccess) {
@@ -204,9 +203,7 @@ private fun ChargeStatsTab(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
-        ),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
@@ -269,9 +266,7 @@ private fun ChargeControlTab(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
-        ),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         if (!rootAvailable) {

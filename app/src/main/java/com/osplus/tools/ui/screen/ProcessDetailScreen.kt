@@ -40,6 +40,7 @@ import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
 import com.osplus.tools.ui.components.LiquidGlassButton
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 进程详情：全量进程列表、按 CPU/内存排序、强制停止与结束进程 */
@@ -86,7 +87,7 @@ fun ProcessDetailScreen(vm: DeviceViewModel) {
                     }
                 }
             },
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {

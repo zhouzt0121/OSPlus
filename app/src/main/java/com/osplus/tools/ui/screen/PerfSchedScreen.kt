@@ -49,6 +49,7 @@ import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 应用列表项：包名 + 显示名 */
@@ -95,7 +96,7 @@ fun PerfSchedScreen(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp),
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (!rootAvailable) {

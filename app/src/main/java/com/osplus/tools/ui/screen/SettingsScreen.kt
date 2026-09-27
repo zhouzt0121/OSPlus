@@ -33,6 +33,7 @@ import com.osplus.tools.ui.theme.AppThemeMode
 import com.osplus.tools.vm.DeviceViewModel
 import com.osplus.tools.ui.components.LiquidGlassButton
 import top.yukonga.miuix.kmp.basic.Text
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
@@ -58,11 +59,8 @@ fun SettingsScreen(vm: DeviceViewModel) {
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            // 与其余各页保持同一组内边距：左右 14dp 让卡片左缘与顶栏标题左缘对齐，
-            // 顶部 4dp 与顶栏底边留出呼吸空间。
-            start = 14.dp, end = 14.dp, top = 4.dp, bottom = 104.dp,
-        ),
+        // 统一走 bottomBarContentPadding：左右 14dp 对齐顶栏，底部避让悬浮底栏 + 系统导航栏
+        contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
