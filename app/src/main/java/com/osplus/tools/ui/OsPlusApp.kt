@@ -127,6 +127,14 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
         // 内容层先渲染进 GraphicsLayer 并记录下来，悬浮控件据此做真实背景模糊（液态玻璃）。
         // 记录的是「背景 + 顶栏 + 页面内容」整层，不含底部悬浮条自身——否则它会把自己的高光也糊进去。
         val backdrop = rememberLayerBackdrop()
+        // 背景层单独记一次，只给顶栏按钮采样。
+        //
+        // 顶栏**在被记录的内容层内部**，如果直接采样 backdrop，
+        // 采到的就是「包含顶栏自己」的上一帧，逐帧累积成拖影。
+        // 官方 LiquidToggle 遇到同样问题时也是这么解的——它给轨道单独开一个
+        // `trackBackdrop`，滑块再采样 `rememberCombinedBackdrop(backdrop, trackBackdrop)`。
+        // 这里更简单：把纯背景单独录一层，顶栏按钮只采它。
+        val topBarBackdrop = rememberLayerBackdrop()
 
         Box(modifier = Modifier.fillMaxSize()) {
             Box(
@@ -134,7 +142,13 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                     .fillMaxSize()
                     .layerBackdrop(backdrop),
             ) {
-                PageBackground()
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .layerBackdrop(topBarBackdrop),
+                ) {
+                    PageBackground()
+                }
                 // 顶栏自带状态栏内边距，因此这里用 Column 而非 Box：
                 // 顶栏占据固定高度，内容区吃掉剩余空间，页面内容永远不会钻到顶栏下面，
                 // 也就不需要在每个页面里各写一遍顶部留白。
@@ -142,6 +156,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                     OsTopBar(
                         title = topTitle,
                         onBack = if (route != null) ({ route = null }) else null,
+                        backdrop = topBarBackdrop,
                         actions = {
                             if (rootTab == RootTab.Overview && route == null) {
                                 OsTopBarAction(
@@ -149,12 +164,14 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                     contentDescription = "清理内存",
                                     enabled = rootAvailable,
                                     onClick = { viewModel.cleanMemCaches() },
+                                    backdrop = topBarBackdrop,
                                 )
                                 OsTopBarAction(
                                     icon = Icons.Rounded.Refresh,
                                     contentDescription = "清理交换",
                                     enabled = rootAvailable,
                                     onClick = { viewModel.cleanSwap() },
+                                    backdrop = topBarBackdrop,
                                 )
                                 OsTopBarAction(
                                     icon = Icons.Rounded.FiberManualRecord,
@@ -170,11 +187,13 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                             rootTab = RootTab.Fps
                                         }
                                     },
+                                    backdrop = topBarBackdrop,
                                 )
                                 OsTopBarAction(
                                     icon = Icons.Rounded.Settings,
                                     contentDescription = "设置",
                                     onClick = { route = RouteSettings },
+                                    backdrop = topBarBackdrop,
                                 )
                             }
                         },

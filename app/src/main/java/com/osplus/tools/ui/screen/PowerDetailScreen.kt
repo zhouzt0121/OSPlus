@@ -46,7 +46,7 @@ import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
-import top.yukonga.miuix.kmp.basic.Button
+import com.osplus.tools.ui.components.LiquidGlassButton
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -97,7 +97,7 @@ private fun PowerUsageTab(vm: DeviceViewModel) {
                 Column {
                     NoticeBanner("需要「使用情况访问权限」才能统计各应用耗电")
                     Spacer(Modifier.height(8.dp))
-                    Button(onClick = {
+                    LiquidGlassButton(onClick = {
                         runCatching {
                             context.startActivity(
                                 Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
@@ -116,7 +116,7 @@ private fun PowerUsageTab(vm: DeviceViewModel) {
                     color = MiuixTheme.colorScheme.onBackground,
                     modifier = Modifier.weight(1f),
                 )
-                Button(onClick = { vm.refreshPowerUsage() }) { Text("刷新") }
+                LiquidGlassButton(onClick = { vm.refreshPowerUsage() }) { Text("刷新") }
             }
         }
         if (entries.isEmpty()) {
@@ -343,7 +343,7 @@ private fun ChargeControlTab(vm: DeviceViewModel) {
             }
         }
         item {
-            Button(onClick = {
+            LiquidGlassButton(onClick = {
                 runCatching {
                     context.startActivity(
                         Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
