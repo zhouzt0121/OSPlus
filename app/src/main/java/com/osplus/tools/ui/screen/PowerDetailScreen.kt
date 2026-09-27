@@ -47,7 +47,7 @@ import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
 import com.osplus.tools.ui.components.LiquidGlassButton
-import top.yukonga.miuix.kmp.basic.Slider
+import com.osplus.tools.ui.components.LiquidSlider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -306,7 +306,7 @@ private fun ChargeControlTab(vm: DeviceViewModel) {
                         style = MiuixTheme.textStyles.title4,
                         color = MiuixTheme.colorScheme.onBackground,
                     )
-                    Slider(
+                    LiquidSlider(
                         value = currentLimit,
                         onValueChange = { currentLimit = it },
                         valueRange = 100f..6000f,

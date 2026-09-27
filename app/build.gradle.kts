@@ -14,9 +14,11 @@ android {
         // 1.3.0：信息架构改版（底栏四页 + 设置移出导航 + 统一顶栏 + 电源页提升为一级页）
         // 1.4.0：概览页指标改回圆环（CPU / GPU / 内存），电池卡换成帧率折线卡
         // 1.5.0：新增「性能调度」二级页，接管 Uperf Game Turbo 与 A-SOUL Games Optimization 两个模块
+        // 1.5.1：全应用 SwitchRow 改用官方 LiquidToggle；LiquidToggle 修复「只能拖不能点」（加 pressable + didDrag）；
+        //        6 处 miuix Slider 改用官方 LiquidSlider
         // versionCode 递增以便覆盖安装已发布的 1.2.0（code 4）
-        versionCode = 7
-        versionName = "1.5.0"
+        versionCode = 8
+        versionName = "1.5.1"
     }
 
     buildFeatures {

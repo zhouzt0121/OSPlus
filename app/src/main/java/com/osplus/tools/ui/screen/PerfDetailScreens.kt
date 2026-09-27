@@ -35,7 +35,7 @@ import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
 import com.osplus.tools.ui.components.LiquidGlassButton
-import top.yukonga.miuix.kmp.basic.Slider
+import com.osplus.tools.ui.components.LiquidSlider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -294,11 +294,10 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
                             style = MiuixTheme.textStyles.footnote2,
                             color = MiuixTheme.colorScheme.onBackgroundVariant,
                         )
-                        Slider(
+                        LiquidSlider(
                             value = stepIndex.toFloat(),
                             onValueChange = { stepIndex = it.toInt().coerceIn(0, lastIndex) },
                             valueRange = 0f..lastIndex.toFloat(),
-                            steps = (lastIndex - 1).coerceAtLeast(0),
                             enabled = rootAvailable,
                         )
                         Spacer(Modifier.height(8.dp))
@@ -480,7 +479,7 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
                             style = MiuixTheme.textStyles.body2,
                             color = MiuixTheme.colorScheme.onBackground,
                         )
-                        Slider(
+                        LiquidSlider(
                             value = value,
                             onValueChange = { value = it },
                             valueRange = gpu.availableFreqs.first().toFloat()..gpu.availableFreqs.last().toFloat(),
@@ -584,7 +583,7 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                         style = MiuixTheme.textStyles.body2,
                         color = MiuixTheme.colorScheme.onBackground,
                     )
-                    Slider(
+                    LiquidSlider(
                         value = sizeGb,
                         onValueChange = { sizeGb = it },
                         valueRange = 1f..8f,
@@ -620,7 +619,7 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                         color = MiuixTheme.colorScheme.onBackground,
                     )
                     var swappiness by remember { mutableStateOf(60f) }
-                    Slider(
+                    LiquidSlider(
                         value = swappiness,
                         onValueChange = { swappiness = it },
                         valueRange = 0f..200f,

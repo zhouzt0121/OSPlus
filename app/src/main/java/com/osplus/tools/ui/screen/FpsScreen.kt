@@ -48,7 +48,7 @@ import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
 import com.osplus.tools.ui.components.LiquidGlassButton
-import top.yukonga.miuix.kmp.basic.Slider
+import com.osplus.tools.ui.components.LiquidSlider
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 帧率记录的分析窗口 */
@@ -188,7 +188,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                                 fontWeight = FontWeight.Medium,
                             )
                         }
-                        Slider(
+                        LiquidSlider(
                             value = overlayAlpha,
                             onValueChange = { vm.setOverlayAlpha(it) },
                             valueRange = FpsOverlayState.MIN_ALPHA..1f,

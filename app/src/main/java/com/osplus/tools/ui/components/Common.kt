@@ -53,22 +53,26 @@ fun ChoiceChip(
 ) {
     val c = osColors()
     val shape = RoundedCornerShape(12.dp)
-    val background by animateColorAsState(
-        targetValue = if (selected) c.primary.copy(alpha = if (c.isDark) 0.26f else 0.13f) else c.cardAlt,
-        label = "chipBackground",
-    )
     val content by animateColorAsState(
         targetValue = if (selected) c.primary else c.textSecondary,
         label = "chipContent",
     )
     Box(
         modifier = modifier
-            // 玻璃表面：玻璃体由选中态决定，棱与高光由 glassSurface 统一给
-            .glassSurface(
-                shape = shape,
-                cornerRadius = 12.dp,
-                body = background,
-                elevation = 2.dp,
+            // 改为官方容器色 + 选中态淡染，**不再用 glassSurface**。
+            //
+            // glassSurface 是自绘的「玻璃体 + 顶光 + 内棱 + 描边」四层，
+            // 叠在玻璃渲染之外、与它的几何对不上（底栏那条白带就是这么来的）。
+            // chip 坐在不透明卡片上，本来也取不到能折射的背景，
+            // 所以这里按官方 LiquidButton 在无 backdrop 时的做法处理：
+            // 只铺一层官方容器色，绝不自绘棱光。
+            .clip(shape)
+            .background(
+                if (selected) {
+                    c.primary.copy(alpha = if (c.isDark) 0.26f else 0.13f)
+                } else {
+                    LiquidGlassColors.container()
+                }
             )
             .then(if (enabled) Modifier.pressable(onClick) else Modifier)
             .alpha(if (enabled) 1f else 0.45f)

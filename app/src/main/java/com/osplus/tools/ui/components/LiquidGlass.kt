@@ -13,14 +13,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -32,6 +32,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.util.fastCoerceIn
+import androidx.compose.ui.util.fastRoundToInt
+
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
@@ -129,6 +139,8 @@ fun LiquidToggle(
         label = "toggleFraction",
     )
 
+    var didDrag by remember { mutableStateOf(false) }
+
     Box(
         modifier = modifier
             .size(width = 64.dp, height = 28.dp)
@@ -136,13 +148,29 @@ fun LiquidToggle(
             .background(lerp(trackColor, accent, fraction))
             .then(
                 if (enabled) {
-                    Modifier.draggable(
-                        orientation = Orientation.Horizontal,
-                        state = rememberDraggableState { delta ->
-                            // 拖过中点即切换，与官方 onDragStopped 的判据一致
-                            if (kotlin.math.abs(delta) > 4f) onCheckedChange(delta > 0f)
-                        },
-                    )
+                    Modifier
+                        // draggable 写在 pressable **外面**：
+                        // Compose 的修饰符是外层先拿事件，draggable 只有在越过
+                        // touchSlop 之后才会消费，没越过的「点一下」会继续落到 pressable。
+                        // 写反了点按会被 draggable 吞掉。
+                        //
+                        // 【踩过的坑】之前只挂了 draggable、没挂点击，
+                        // 结果开关只能拖不能点——绝大多数人是用点的。
+                        .draggable(
+                            orientation = Orientation.Horizontal,
+                            state = rememberDraggableState { delta ->
+                                if (kotlin.math.abs(delta) > 6f) {
+                                    didDrag = true
+                                    onCheckedChange(delta > 0f)
+                                }
+                            },
+                            onDragStarted = { didDrag = false },
+                            onDragStopped = { didDrag = false },
+                        )
+                        .pressable {
+                            // 拖过就不再当作点击，避免「拖到开」之后又被点回关
+                            if (!didDrag) onCheckedChange(!checked)
+                        }
                 } else {
                     Modifier
                 }
@@ -187,6 +215,150 @@ fun LiquidToggle(
                             },
                             onDrawSurface = {
                                 drawRect(Color.White.copy(alpha = 1f - fraction))
+                            },
+                        )
+                    } else {
+                        Modifier
+                            .clip(shape)
+                            .background(Color.White)
+                            .shadow(2.dp, shape)
+                    }
+                )
+        )
+    }
+}
+
+/**
+ * 液态玻璃滑块。
+ *
+ * 材质照官方 `LiquidSlider`：
+ * - 轨道高 6dp，`trackColor` 打底 + `accentColor` 填充到当前值
+ * - 滑块 40×24dp，`drawBackdrop` + `Highlight.Ambient` + `Shadow` + `InnerShadow`，
+ *   `onDrawSurface = drawRect(White.copy(alpha = 1f - progress))`
+ * - 强调色 `#0088FF` / `#0091FF`
+ *
+ * 官方给滑块配了 `rememberCombinedBackdrop(backdrop, trackBackdrop)`——
+ * 滑块同时采主背景与轨道层。这里 slider 多数坐在卡片上，取不到主背景，
+ * 因此只在传入 [backdrop] 时才挂 drawBackdrop，否则用静态玻璃体。
+ */
+@Composable
+fun LiquidSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float> = 0f..1f,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    backdrop: Backdrop? = null,
+    onValueChangeFinished: () -> Unit = {},
+) {
+    val dark = isSystemInDarkTheme()
+    val accent = if (dark) LiquidGlassColors.accentDark else LiquidGlassColors.accentLight
+    val trackColor = if (dark) LiquidGlassColors.trackDark else LiquidGlassColors.trackLight
+    val shape = RoundedCornerShape(percent = 50)
+
+    val progress = ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start))
+        .fastCoerceIn(0f, 1f)
+
+    BoxWithConstraints(
+        modifier = modifier.fillMaxWidth().height(24.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val trackWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
+        var didDrag by remember { mutableStateOf(false) }
+
+        // 轨道：底色 + 已填充段。官方用 `layout` 把填充段裁到当前进度宽，
+        // 比用 Modifier.width 好在不会触发布局重排。
+        Box(
+            Modifier
+                .clip(shape)
+                .background(trackColor)
+                .pointerInput(enabled) {
+                    detectTapGestures { pos ->
+                        if (enabled) {
+                            didDrag = true
+                            // 不用 lerp()：当前作用域里 lerp 解析到的是 Color 版
+                            // （给 LiquidToggle 的轨道混色用的），这里要的是 Float 版。
+                            // 直接算比加别名 import 更不容易踩到重载歧义。
+                            val posFraction = (pos.x / trackWidthPx).coerceIn(0f, 1f)
+                            onValueChange(
+                                valueRange.start +
+                                    (valueRange.endInclusive - valueRange.start) * posFraction
+                            )
+                            onValueChangeFinished()
+                        }
+                    }
+                }
+                .height(6.dp)
+                .fillMaxWidth()
+        )
+        Box(
+            Modifier
+                .clip(shape)
+                .background(accent)
+                .height(6.dp)
+                .layout { measurable, constraints ->
+                    val placeable = measurable.measure(constraints)
+                    val width = (constraints.maxWidth * progress).fastRoundToInt()
+                    layout(width, placeable.height) { placeable.place(0, 0) }
+                }
+        )
+
+        // 滑块
+        Box(
+            Modifier
+                .offset(x = ((maxWidth - 24.dp) * progress))
+                .size(width = 40.dp, height = 24.dp)
+                .then(
+                    if (enabled) {
+                        Modifier
+                            .draggable(
+                                orientation = Orientation.Horizontal,
+                                state = rememberDraggableState { delta ->
+                                    didDrag = true
+                                    onValueChange(
+                                        (value + delta / trackWidthPx.coerceAtLeast(1f) *
+                                            (valueRange.endInclusive - valueRange.start))
+                                            .coerceIn(valueRange)
+                                    )
+                                },
+                                onDragStarted = { didDrag = false },
+                                onDragStopped = {
+                                    didDrag = false
+                                    onValueChangeFinished()
+                                },
+                            )
+                    } else {
+                        Modifier
+                    }
+                )
+                .then(
+                    if (backdrop != null) {
+                        Modifier.drawBackdrop(
+                            backdrop = backdrop,
+                            shape = { shape },
+                            effects = {
+                                blur(8f.dp.toPx() * (1f - progress))
+                                lens(
+                                    10f.dp.toPx() * progress,
+                                    14f.dp.toPx() * progress,
+                                    chromaticAberration = true,
+                                )
+                            },
+                            highlight = {
+                                Highlight.Ambient.copy(
+                                    width = Highlight.Ambient.width / 1.5f,
+                                    blurRadius = Highlight.Ambient.blurRadius / 1.5f,
+                                    alpha = progress,
+                                )
+                            },
+                            shadow = {
+                                Shadow(radius = 4f.dp, color = Color.Black.copy(alpha = 0.05f))
+                            },
+                            innerShadow = {
+                                InnerShadow(radius = 4f.dp * progress, alpha = progress)
+                            },
+                            onDrawSurface = {
+                                drawRect(Color.White.copy(alpha = 1f - progress))
                             },
                         )
                     } else {
