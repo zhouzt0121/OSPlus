@@ -31,7 +31,6 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.RemoteViews
 import android.widget.TextView
-import androidx.core.app.NotificationCompat
 import com.osplus.tools.MainActivity
 import com.osplus.tools.OsPlusApplication
 import com.osplus.tools.R
@@ -316,13 +315,17 @@ class FpsOverlayService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val views = RemoteViews(packageName, R.layout.notification_glass)
+        val views = RemoteViews(packageName, R.layout.notification_liquid_card)
         views.setImageViewBitmap(R.id.notif_glass_bg, glassBitmap())
         applyNotificationText(views)
-        return NotificationCompat.Builder(this, OsPlusApplication.CHANNEL_FPS)
-            .setSmallIcon(R.mipmap.ic_launcher)
+        // Android 12+ 标准做法：原生 Notification.Builder + DecoratedCustomViewStyle
+        // （系统会为自定义视图套上标准通知外壳），小图标用单色原生 ic_notify，
+        // 严禁彩色 mipmap——会被状态栏渲染成白色色块
+        return Notification.Builder(this, OsPlusApplication.CHANNEL_FLUID)
+            .setSmallIcon(R.drawable.ic_notify)
             .setCustomContentView(views)
             .setCustomBigContentView(views)
+            .setStyle(Notification.DecoratedCustomViewStyle())
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(intent)

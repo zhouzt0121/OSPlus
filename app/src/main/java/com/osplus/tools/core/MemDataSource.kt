@@ -109,12 +109,22 @@ object MemDataSource {
         return name
     }
 
-    /** 当前处于活动状态的交换设备（/proc/swaps 第一列，形如 /dev/block/zram0） */
-    private fun activeSwapDevices(): List<String> =
-        runCatching { File("/proc/swaps").readLines() }.getOrDefault(emptyList())
+    /**
+     * 当前处于活动状态的交换设备（/proc/swaps 第一列，形如 /dev/block/zram0）。
+     *
+     * **必须走 root cat**：Android 12+ 对普通应用 SELinux 拒读 /proc/swaps，
+     * 直接 `File("/proc/swaps").readLines()` 拿到空串，会误判「没有交换设备」，
+     * 这正是「清理交换分区」一直报未检测到的根因。
+     */
+    private suspend fun activeSwapDevices(): List<String> =
+        Shell.run("cat /proc/swaps", root = true).stdout.lines()
             .drop(1)
             .mapNotNull { it.trim().split(Regex("\\s+")).firstOrNull() }
             .filter { it.isNotEmpty() && it != "Filename" }
+            // 只取设备名：不同内核 /proc/swaps 第一列形态不一
+            //（/dev/block/zram0、/block/zram0 都见过），直接拼进命令会 No such file；
+            // 统一归一为 zramN，路径一律用 /dev/block/zramN 重新构造
+            .map { it.substringAfterLast('/') }
 
     /**
      * 调整 ZRAM 大小（需要 root）。
@@ -130,9 +140,7 @@ object MemDataSource {
             ?.filter { it.name.startsWith("zram") }
             ?.map { it.name } ?: return false
         val active = activeSwapDevices()
-        val targets = devices.filter { name ->
-            active.any { it.endsWith(name) }
-        }.ifEmpty { devices }
+        val targets = devices.filter { it in active }.ifEmpty { devices }
 
         val swapoff = binPath("swapoff")
         val mkswap = binPath("mkswap")
@@ -203,9 +211,11 @@ object MemDataSource {
         val swapoff = binPath("swapoff")
         val swapon = binPath("swapon")
         // 每台设备单独一条命令再串联：合并成一条时前一台 swapoff 失败
-        // （例如 PATH 里找不到工具）会让后面的设备全部漏处理
+        // （例如 PATH 里找不到工具）会让后面的设备全部漏处理；
+        // 路径由设备名重新构造，不沿用 /proc/swaps 的原始文本
         val cmd = devices.joinToString("; ") {
-            "$swapoff $it; $swapon $it"
+            val dev = "/dev/block/" + it.substringAfterLast('/')
+            "$swapoff $dev; $swapon $dev"
         }
         val r = Shell.run(cmd, root = true)
         val after = read()
