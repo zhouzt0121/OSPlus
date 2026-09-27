@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,10 +33,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
@@ -43,6 +47,7 @@ import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.fastRoundToInt
 
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.drawBackdrop
@@ -483,6 +488,17 @@ private fun Modifier.glassStaticSurface(
  * 官方用 `DampedDragAnimation` + `InteractiveHighlight` 做拖拽跟随形变，
  * 那两个类在 catalog 里、不在发布库中，这里用等价的 spring 动画替代，
  * **材质与配色完全照官方值**。
+ *
+ * ### 点击 + 横向拖动切换（统一手势）
+ *
+ * 一个 `detectHorizontalDragGestures` 同时承接「点按选 tab」与「横向拖动切 tab」：
+ * - 拖动位移 < 12px 视为点按 → 按落点 x 算出命中的 tab
+ * - 否则按拖动方向切到相邻 tab（左拖 → 右一个，右拖 → 左一个）
+ * - 选中胶囊（单一覆盖层，非逐 item 自绘）用 `animatedOffset` 跟随手指，
+ *   松手归零、由 spring 弹回新位置——这层「跟随」就是官方 `InteractiveHighlight` 的等价替代。
+ *
+ * 用 `rememberUpdatedState` 把 `selectedIndex` / `onSelect` 的最新值喂给手势闭包，
+ * 这样 `pointerInput` 只需建一次（key = Unit），避免每次选中重建手势把进行中的拖动打断。
  */
 @Composable
 fun LiquidBottomBar(
@@ -495,17 +511,63 @@ fun LiquidBottomBar(
     val accent = LiquidGlassColors.accent()
     val container = LiquidGlassColors.container()
     val barShape = RoundedCornerShape(percent = 50)
+    val itemCount = items.size
+    val density = LocalDensity.current
+    val c = osColors()
 
-    Box(
+    // 手势闭包要读的最新值（避免 pointerInput 重建打断拖动）
+    val currentSelected by rememberUpdatedState(selectedIndex)
+    val currentOnSelect by rememberUpdatedState(onSelect)
+
+    // 拖动偏移（px），跟随手指；松手归零 → spring 弹回当前选中位
+    var dragOffsetPx by remember { mutableStateOf(0f) }
+    val animatedOffset by animateFloatAsState(
+        targetValue = dragOffsetPx,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 520f),
+        label = "barDragOffset",
+    )
+    // 点按落点的 x（px），用于判定命中哪个 tab
+    var tapStartX by remember { mutableStateOf(0f) }
+
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragStart = { tapStartX = it.x },
+                    onHorizontalDrag = { _, dragAmount -> dragOffsetPx += dragAmount },
+                    onDragEnd = {
+                        val itemWidthPx = size.width / itemCount.toFloat()
+                        if (kotlin.math.abs(dragOffsetPx) < 12f) {
+                            // 视为点按：落点在第几个 tab
+                            val idx = (tapStartX / itemWidthPx)
+                                .toInt()
+                                .coerceIn(0, itemCount - 1)
+                            if (idx != currentSelected) currentOnSelect(idx)
+                        } else {
+                            // 视为拖动：左拖→右一个、右拖→左一个
+                            val dir = if (dragOffsetPx < 0f) 1 else -1
+                            val next = (currentSelected + dir).coerceIn(0, itemCount - 1)
+                            if (next != currentSelected) currentOnSelect(next)
+                        }
+                        dragOffsetPx = 0f
+                    },
+                    onDragCancel = { dragOffsetPx = 0f },
+                )
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Row(
-            modifier = Modifier
+        val itemWidth = maxWidth / itemCount
+        val itemWidthPx = with(density) { itemWidth.toPx() }
+        val barHeight = 64.dp
+        val totalWidthPx = itemWidthPx * itemCount
+
+        // 玻璃底
+        Box(
+            Modifier
                 .fillMaxWidth()
-                .height(64.dp)
+                .height(barHeight)
                 .drawBackdrop(
                     backdrop = backdrop,
                     shape = { barShape },
@@ -517,91 +579,63 @@ fun LiquidBottomBar(
                     },
                     highlight = { Highlight.Default },
                     onDrawSurface = { drawRect(container) },
-                )
-                .padding(horizontal = 4.dp),
+                ),
+        )
+
+        // 选中胶囊（单一覆盖层，跟随手指）
+        val pillX = (selectedIndex * itemWidthPx + animatedOffset)
+            .coerceIn(0f, totalWidthPx - itemWidthPx)
+        Box(
+            Modifier
+                .offset { IntOffset(pillX.toInt(), 0) }
+                .width(itemWidth)
+                .height(barHeight)
+                .drawBackdrop(
+                    backdrop = backdrop,
+                    shape = { RoundedCornerShape(percent = 50) },
+                    effects = {
+                        lens(10f.dp.toPx(), 14f.dp.toPx(), chromaticAberration = true)
+                    },
+                    highlight = { Highlight.Default },
+                    shadow = { Shadow(alpha = 0.10f) },
+                    innerShadow = { InnerShadow(radius = 8f.dp, alpha = 1f) },
+                    onDrawSurface = { drawRect(accent.copy(alpha = 0.14f)) },
+                ),
+        )
+
+        // 条目（图标 + 文字，纯展示，命中判定交给父层手势）
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(barHeight),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
             items.forEachIndexed { index, item ->
-                LiquidBarItemView(
-                    item = item,
-                    selected = index == selectedIndex,
-                    accent = accent,
-                    backdrop = backdrop,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onSelect(index) },
-                )
+                val selected = index == selectedIndex
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .padding(vertical = 7.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = item.label,
+                        tint = if (selected) accent else c.textTertiary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Text(
+                        text = item.label,
+                        style = OsText.micro,
+                        color = if (selected) accent else c.textTertiary,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                    )
+                }
             }
-        }
-    }
-}
-
-@Composable
-private fun LiquidBarItemView(
-    item: LiquidBarItem,
-    selected: Boolean,
-    accent: Color,
-    backdrop: Backdrop,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val c = osColors()
-    val progress by animateFloatAsState(
-        targetValue = if (selected) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.72f, stiffness = 380f),
-        label = "barItemProgress",
-    )
-    val contentColor = if (selected) accent else c.textTertiary
-    val pillShape = RoundedCornerShape(percent = 50)
-
-    Box(
-        modifier = modifier.padding(horizontal = 2.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .scale(1f - 0.06f * (1f - progress))
-                .then(
-                    if (progress > 0.01f) {
-                        Modifier.drawBackdrop(
-                            backdrop = backdrop,
-                            shape = { pillShape },
-                            effects = {
-                                // 选中片只在按下时才起折射，平时是静态的——
-                                // 官方 LiquidBottomTabs 的选中块也是 `lens(... * progress)`
-                                lens(
-                                    10f.dp.toPx() * progress,
-                                    14f.dp.toPx() * progress,
-                                    chromaticAberration = true,
-                                )
-                            },
-                            highlight = { Highlight.Default.copy(alpha = progress) },
-                            shadow = { Shadow(alpha = 0.10f * progress) },
-                            innerShadow = { InnerShadow(radius = 8f.dp * progress, alpha = progress) },
-                            onDrawSurface = { drawRect(accent.copy(alpha = 0.14f * progress)) },
-                        )
-                    } else {
-                        Modifier
-                    }
-                )
-                .pressable(onClick)
-                .padding(vertical = 7.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Icon(
-                imageVector = item.icon,
-                contentDescription = item.label,
-                tint = contentColor,
-                modifier = Modifier.size(22.dp),
-            )
-            Text(
-                text = item.label,
-                style = OsText.micro,
-                color = contentColor,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                maxLines = 1,
-            )
         }
     }
 }

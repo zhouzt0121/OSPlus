@@ -16,9 +16,10 @@ android {
         // 1.5.0：新增「性能调度」二级页，接管 Uperf Game Turbo 与 A-SOUL Games Optimization 两个模块
         // 1.5.1：全应用 SwitchRow 改用官方 LiquidToggle；LiquidToggle 修复「只能拖不能点」（加 pressable + didDrag）；
         //        6 处 miuix Slider 改用官方 LiquidSlider
+// 1.5.2：底栏加横向拖动切换（点击 + 拖动统一手势；选中胶囊跟随手指）
         // versionCode 递增以便覆盖安装已发布的 1.2.0（code 4）
-        versionCode = 8
-        versionName = "1.5.1"
+        versionCode = 9
+        versionName = "1.5.2"
     }
 
     buildFeatures {
