@@ -47,7 +47,7 @@ import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
-import top.yukonga.miuix.kmp.basic.Button
+import com.osplus.tools.ui.components.LiquidGlassButton
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Text
 
@@ -202,10 +202,10 @@ fun FpsScreen(vm: DeviceViewModel) {
                     }
                     Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { vm.exportFpsCsv() }, enabled = records.isNotEmpty()) {
+                        LiquidGlassButton(onClick = { vm.exportFpsCsv() }, enabled = records.isNotEmpty()) {
                             Text("导出 CSV")
                         }
-                        Button(onClick = { vm.clearFpsRecords() }, enabled = records.isNotEmpty()) {
+                        LiquidGlassButton(onClick = { vm.clearFpsRecords() }, enabled = records.isNotEmpty()) {
                             Text("清空记录")
                         }
                     }
@@ -218,7 +218,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                     }
                     if (!overlayGranted) {
                         Spacer(Modifier.height(8.dp))
-                        Button(onClick = {
+                        LiquidGlassButton(onClick = {
                             runCatching {
                                 context.startActivity(
                                     Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)

@@ -34,7 +34,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
-import top.yukonga.miuix.kmp.basic.Switch
 import top.yukonga.miuix.kmp.basic.Text
 
 /**
@@ -316,7 +315,16 @@ fun SwitchRow(
             }
         }
         Spacer(Modifier.width(12.dp))
-        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        // 换成官方 LiquidToggle 的材质。
+        //
+        // 全应用的开关都走这一行，所以改这里就等于把 6 处 SwitchRow 全换了。
+        // 不传 backdrop：开关坐在不透明卡片上，折射一片纯色没有意义，
+        // 反而会让它去采样包含自己的内容层、逐帧累积成拖影。
+        LiquidToggle(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+        )
     }
 }
 

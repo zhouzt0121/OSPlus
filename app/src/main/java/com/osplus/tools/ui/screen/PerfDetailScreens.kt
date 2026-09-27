@@ -34,7 +34,7 @@ import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
-import top.yukonga.miuix.kmp.basic.Button
+import com.osplus.tools.ui.components.LiquidGlassButton
 import top.yukonga.miuix.kmp.basic.Slider
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -303,14 +303,14 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
                         )
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
+                            LiquidGlassButton(
                                 onClick = {
                                     vm.lockCpuFrequency(selectedCore, target)
                                     freqApplyTick++
                                 },
                                 enabled = rootAvailable,
                             ) { Text("锁定此挡位") }
-                            Button(
+                            LiquidGlassButton(
                                 onClick = {
                                     vm.restoreCpuAuto(selectedCore)
                                     freqApplyTick++
@@ -592,11 +592,11 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
+                        LiquidGlassButton(
                             onClick = { vm.resizeZram((sizeGb * 1024f * 1024f).toLong()) },
                             enabled = rootAvailable,
                         ) { Text("应用并重建") }
-                        Button(
+                        LiquidGlassButton(
                             onClick = { sizeGb = (mem.zramTotalKb / 1024f / 1024f).coerceIn(1f, 8f) },
                         ) { Text("取当前值") }
                     }

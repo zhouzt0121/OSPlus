@@ -39,7 +39,7 @@ import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
-import top.yukonga.miuix.kmp.basic.Button
+import com.osplus.tools.ui.components.LiquidGlassButton
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 进程详情：全量进程列表、按 CPU/内存排序、强制停止与结束进程 */
@@ -106,7 +106,7 @@ fun ProcessDetailScreen(vm: DeviceViewModel) {
                             color = c.textSecondary,
                             modifier = Modifier.weight(1f),
                         )
-                        Button(onClick = { sortByCpu = !sortByCpu }) {
+                        LiquidGlassButton(onClick = { sortByCpu = !sortByCpu }) {
                             Text(if (sortByCpu) "内存" else "CPU")
                         }
                     }
@@ -164,10 +164,10 @@ fun ProcessDetailScreen(vm: DeviceViewModel) {
                     p.packageName?.let { pkg ->
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { vm.forceStop(pkg) }, enabled = rootAvailable) {
+                            LiquidGlassButton(onClick = { vm.forceStop(pkg) }, enabled = rootAvailable) {
                                 Text("强制停止")
                             }
-                            Button(onClick = { vm.killProcess(p.pid) }, enabled = rootAvailable) {
+                            LiquidGlassButton(onClick = { vm.killProcess(p.pid) }, enabled = rootAvailable) {
                                 Text("结束进程")
                             }
                         }

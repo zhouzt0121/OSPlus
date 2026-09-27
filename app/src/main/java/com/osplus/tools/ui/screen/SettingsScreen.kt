@@ -31,7 +31,7 @@ import com.osplus.tools.ui.components.SegmentedTabs
 import com.osplus.tools.ui.components.SwitchRow
 import com.osplus.tools.ui.theme.AppThemeMode
 import com.osplus.tools.vm.DeviceViewModel
-import top.yukonga.miuix.kmp.basic.Button
+import com.osplus.tools.ui.components.LiquidGlassButton
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -96,8 +96,8 @@ fun SettingsScreen(vm: DeviceViewModel) {
                     InfoRow("通知", value = "安装后首次启动申请")
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { vm.refreshRootState() }) { Text("重新检测 Root") }
-                        Button(onClick = {
+                        LiquidGlassButton(onClick = { vm.refreshRootState() }) { Text("重新检测 Root") }
+                        LiquidGlassButton(onClick = {
                             runCatching {
                                 context.startActivity(
                                     Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
@@ -107,7 +107,7 @@ fun SettingsScreen(vm: DeviceViewModel) {
                         }) { Text("使用情况访问") }
                     }
                     Spacer(Modifier.height(8.dp))
-                    Button(onClick = {
+                    LiquidGlassButton(onClick = {
                         runCatching {
                             context.startActivity(
                                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
