@@ -156,9 +156,9 @@ fun FpsScreen(vm: DeviceViewModel) {
                         },
                     )
                     SwitchRow(
-                        label = "实时任务通知监视",
-                        summary = "状态栏芯片常驻显示帧率，通知卡片实时呈现帧率与 CPU/GPU/内存指标；" +
-                            "无需悬浮窗权限，前台服务跨应用保活，通知上可直接开始 / 停止记录",
+                        label = "跨应用实时监视",
+                        summary = "以前台服务常驻，切到其他应用后仍持续采集帧率与系统指标；" +
+                            "呈现方式（实时任务通知 / 悬浮窗）与显示项在「设置」里配置",
                         checked = overlayRunning,
                         onCheckedChange = { on ->
                             // 不直接改本地状态：状态由服务真实运行情况回写，
@@ -169,8 +169,8 @@ fun FpsScreen(vm: DeviceViewModel) {
                         },
                     )
                     Text(
-                        text = "已用实时任务通知代替悬浮窗：通知上点「开始记录 / 停止记录」即可留档，" +
-                            "状态栏芯片随时显示当前帧率。",
+                        text = "呈现方式见「设置 → 实时任务通知」：开启时状态栏芯片与通知抽屉实时展示，" +
+                            "关闭时改用悬浮窗；两种方式下都可直接在通知上开始 / 停止记录。",
                         style = OsText.micro,
                         color = c.textTertiary,
                     )

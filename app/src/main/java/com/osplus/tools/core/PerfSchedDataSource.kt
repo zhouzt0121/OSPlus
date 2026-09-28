@@ -231,14 +231,6 @@ object PerfSchedDataSource {
         else SchedResult(false, "重启命令已下发，但未检测到进程，请检查日志")
     }
 
-    /** 读取 uperf 日志尾部，用于排障 */
-    suspend fun tailUperfLog(lines: Int = 120): String {
-        val n = lines.coerceIn(10, 500)
-        val cmd = "tail -n $n $UPERF_DIR/uperf_log.txt 2>/dev/null " +
-            "|| tail -n $n $UPERF_DIR_ALT/uperf_log.txt 2>/dev/null"
-        return Shell.run(cmd).stdout.trim()
-    }
-
     // ------------------------------------------------------------------ A-SOUL
 
     /** 写入 A-SOUL 全局档位与分游戏规则，并重启 AsoulOpt 使配置生效 */

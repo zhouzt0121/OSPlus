@@ -16,10 +16,14 @@ android {
         // 1.5.0：新增「性能调度」二级页，接管 Uperf Game Turbo 与 A-SOUL Games Optimization 两个模块
         // 1.5.1：全应用 SwitchRow 改用官方 LiquidToggle；LiquidToggle 修复「只能拖不能点」（加 pressable + didDrag）；
         //        6 处 miuix Slider 改用官方 LiquidSlider
-// 1.5.2：底栏加横向拖动切换（点击 + 拖动统一手势；选中胶囊跟随手指）
+        // 1.5.2：底栏加横向拖动切换（点击 + 拖动统一手势；选中胶囊跟随手指）
+        // 2.0.0：实时任务通知（可配置显示项 + 保活锚点）、ZRAM 调整闸门、Shell 超时与并发读流
+        // 2.1.0：新增「耗电统计」录制页（真实时间轴电量曲线 + 平均功耗/理论续航 + 按应用拆分）；
+        //        修复电池节点被 SELinux 静默跳过、容量单位多除 1000、通知复制无回执；
+        //        清理死代码（无引用的组件、不可达的 24 小时估算链路）
         // versionCode 递增以便覆盖安装已发布的 1.2.0（code 4）
-        versionCode = 14
-        versionName = "2.0.0"
+        versionCode = 15
+        versionName = "2.1.0"
     }
 
     buildFeatures {

@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,6 +25,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -724,31 +724,249 @@ private fun MiniBarStrip(
 }
 
 /** 列表行内的迷你趋势条 */
+/** [MultiLineChart] 的一条曲线 */
+data class MultiSeries(
+    val label: String,
+    val values: List<Float>,
+    val color: Color,
+)
+
+/**
+ * 多序列折线图 + 图例。
+ *
+ * 单序列的 [LineChart] 只能回答「整体怎么变」，回答不了「谁在变」——
+ * 「使用场景」要比较几个应用在同一段时间里的占用变化，必须同时画多条。
+ *
+ * 有意**不画面积填充**：多条曲线的渐变面积会互相叠加成一团色块，
+ * 反而看不清各自走势。多序列场景下只保留线本身。
+ *
+ * 序列数建议不超过 5 条，再多颜色就分不清了；各序列的 `values` 长度应一致，
+ * 否则短的那条会被拉伸到整幅宽度，时间轴对不齐。
+ */
 @Composable
-fun RowScope.MiniBars(
-    values: List<Float>,
+fun MultiLineChart(
+    series: List<MultiSeries>,
     maxValue: Float,
-    color: Color,
     modifier: Modifier = Modifier,
-    width: Dp = 64.dp,
-    height: Dp = 20.dp,
+    height: Dp = 92.dp,
 ) {
+    val c = osColors()
     val safeMax = maxValue.coerceAtLeast(0.001f)
-    val data = if (values.isEmpty()) List(5) { 0f } else values.takeLast(5)
-    Canvas(modifier = modifier.width(width).height(height)) {
-        val n = 5
-        val slotW = size.width / n
-        val barW = slotW * 0.5f
-        data.forEachIndexed { i, v ->
-            val f = (v / safeMax).coerceIn(0f, 1f)
-            val left = slotW * i + (slotW - barW) / 2f
-            val h = (size.height * f).coerceAtLeast(barW)
-            drawRoundRect(
-                color = color.copy(alpha = 0.9f),
-                topLeft = Offset(left, size.height - h),
-                size = Size(barW, h),
-                cornerRadius = CornerRadius(barW / 2f, barW / 2f),
+    val density = LocalDensity.current
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Canvas(Modifier.fillMaxWidth().height(height)) {
+            val chartBottom = size.height
+            drawLine(
+                color = c.hairline,
+                start = Offset(0f, chartBottom - 0.5f),
+                end = Offset(size.width, chartBottom - 0.5f),
+                strokeWidth = 1f,
             )
+            series.forEach { s ->
+                val data = s.values
+                if (data.isEmpty()) return@forEach
+                val stepX = if (data.size > 1) size.width / (data.size - 1) else size.width
+                val path = Path().apply {
+                    data.forEachIndexed { i, v ->
+                        val x = stepX * i
+                        val y = chartBottom - chartBottom * (v / safeMax).coerceIn(0f, 1f)
+                        if (i == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                }
+                drawPath(
+                    path = path,
+                    color = s.color,
+                    style = Stroke(
+                        width = with(density) { 1.8.dp.toPx() },
+                        join = StrokeJoin.Round,
+                        cap = StrokeCap.Round,
+                    ),
+                )
+            }
+        }
+        if (series.isNotEmpty()) {
+            Spacer(Modifier.height(7.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                series.chunked(2).forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        row.forEach { s ->
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Canvas(Modifier.size(7.dp)) { drawCircle(s.color) }
+                                Spacer(Modifier.width(5.dp))
+                                Text(
+                                    text = s.label,
+                                    style = OsText.micro,
+                                    color = c.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        // 奇数项时补空位，否则最后一格会被拉伸成整行宽
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
         }
     }
+}
+
+/** [TimeSeriesChart] 的一个数据点：相对录制开始的毫秒偏移 + 数值 */
+data class TimePoint(val elapsedMs: Long, val value: Float)
+
+/**
+ * 时间轴折线图（真实 X 轴，不是等距铺满）。
+ *
+ * 与 [LineChart] 的关键差别：**X 轴按时间比例映射，而不是把样本均匀铺满整幅宽度**。
+ * 这一点对「耗电录制」是必需的——等距铺满时，录 2 分钟和录 2 小时的曲线长得一模一样，
+ * 电量掉得快还是慢完全看不出来；只有把时间当真轴，斜率才有意义。
+ *
+ * Y 轴固定 0~100%（电量百分比），带刻度网格；X 轴按 [xMaxMs] 分档，默认给 3 枚刻度。
+ * 首点处画一条虚线基准，便于一眼比出「掉了多少」。
+ */
+@Composable
+fun TimeSeriesChart(
+    points: List<TimePoint>,
+    xMaxMs: Long,
+    color: Color,
+    modifier: Modifier = Modifier,
+    height: Dp = 156.dp,
+    yMax: Float = 100f,
+    yTicks: List<Float> = listOf(0f, 25f, 50f, 75f, 100f),
+    xTickCount: Int = 3,
+    xLabel: (Long) -> String = { ms -> "%d:%02d".format(ms / 60_000, (ms / 1000) % 60) },
+    yLabel: (Float) -> String = { "%.0f".format(it) },
+) {
+    val c = osColors()
+    val measurer = rememberTextMeasurer()
+    val labelStyle = TextStyle(
+        color = c.textTertiary,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Medium,
+    )
+    val density = LocalDensity.current
+
+    Canvas(modifier.fillMaxWidth().height(height)) {
+        val leftPad = with(density) { 26.dp.toPx() }
+        val bottomPad = with(density) { 15.dp.toPx() }
+        val topPad = with(density) { 4.dp.toPx() }
+        val plotLeft = leftPad
+        val plotRight = size.width
+        val plotTop = topPad
+        val plotBottom = size.height - bottomPad
+        val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
+        val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
+        val safeX = xMaxMs.coerceAtLeast(1L).toFloat()
+        val safeY = yMax.coerceAtLeast(0.001f)
+
+        fun xOf(ms: Long): Float = plotLeft + plotW * (ms / safeX).coerceIn(0f, 1f)
+        fun yOf(v: Float): Float = plotBottom - plotH * (v / safeY).coerceIn(0f, 1f)
+
+        // Y 轴刻度 + 网格
+        yTicks.forEach { t ->
+            val y = yOf(t)
+            drawLine(
+                color = c.hairline,
+                start = Offset(plotLeft, y),
+                end = Offset(plotRight, y),
+                strokeWidth = 1f,
+            )
+            val tm = measurer.measure(yLabel(t), labelStyle)
+            drawText(
+                textLayoutResult = tm,
+                topLeft = Offset(
+                    plotLeft - tm.size.width - with(density) { 5.dp.toPx() },
+                    y - tm.size.height / 2f,
+                ),
+            )
+        }
+
+        // X 轴刻度
+        repeat(xTickCount) { i ->
+            val ms = xMaxMs * i / (xTickCount - 1).coerceAtLeast(1)
+            val tm = measurer.measure(xLabel(ms), labelStyle)
+            val tx = (xOf(ms) - tm.size.width / 2f)
+                .coerceIn(plotLeft, (plotRight - tm.size.width).coerceAtLeast(plotLeft))
+            drawText(
+                textLayoutResult = tm,
+                topLeft = Offset(tx, plotBottom + with(density) { 2.dp.toPx() }),
+            )
+        }
+
+        if (points.isEmpty()) return@Canvas
+
+        // 起点基准线：电量曲线几乎是一条缓降的斜线，没有基准就分不清
+        // 「现在 94%」到底是刚掉下来还是从头就在这儿
+        val baseY = yOf(points.first().value)
+        drawLine(
+            color = color.copy(alpha = 0.35f),
+            start = Offset(plotLeft, baseY),
+            end = Offset(plotRight, baseY),
+            strokeWidth = with(density) { 1.dp.toPx() },
+            pathEffect = PathEffect.dashPathEffect(
+                floatArrayOf(with(density) { 4.dp.toPx() }, with(density) { 4.dp.toPx() }),
+            ),
+        )
+
+        if (points.size >= 2) {
+            val area = Path().apply {
+                moveTo(xOf(points.first().elapsedMs), plotBottom)
+                points.forEach { lineTo(xOf(it.elapsedMs), yOf(it.value)) }
+                lineTo(xOf(points.last().elapsedMs), plotBottom)
+                close()
+            }
+            drawPath(
+                path = area,
+                brush = Brush.verticalGradient(
+                    colors = listOf(color.copy(alpha = 0.22f), color.copy(alpha = 0.02f)),
+                    startY = plotTop,
+                    endY = plotBottom,
+                ),
+            )
+            val line = Path().apply {
+                points.forEachIndexed { i, p ->
+                    val x = xOf(p.elapsedMs)
+                    val y = yOf(p.value)
+                    if (i == 0) moveTo(x, y) else lineTo(x, y)
+                }
+            }
+            drawPath(
+                path = line,
+                color = color,
+                style = Stroke(
+                    width = with(density) { 2.dp.toPx() },
+                    join = StrokeJoin.Round,
+                    cap = StrokeCap.Round,
+                ),
+            )
+        }
+
+        // 末端标记点
+        drawCircle(
+            color = color,
+            radius = with(density) { 3.5.dp.toPx() },
+            center = Offset(xOf(points.last().elapsedMs), yOf(points.last().value)),
+        )
+    }
+}
+
+/**
+ * 时间轴上限：**默认 10 分钟，超出后按 5 分钟向上取整扩展**。
+ *
+ * 固定 10 分钟会让长录制的曲线全挤在右端；只按实际时长缩放又会让曲线
+ * 永远铺满全宽——录 1 分钟和录 10 分钟看起来一样陡，反而丢了「跌落速度」。
+ * 取整扩展能让轴在一段时间内保持稳定，曲线随时间自然向右生长。
+ */
+fun autoXMaxMs(durationMs: Long): Long {
+    val base = 10 * 60_000L
+    if (durationMs <= base) return base
+    val step = 5 * 60_000L
+    return ((durationMs / step) + 1) * step
 }

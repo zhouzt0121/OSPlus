@@ -29,6 +29,7 @@ import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.MetricChartCard
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
+import com.osplus.tools.ui.components.SwitchRow
 import com.osplus.tools.ui.components.UsageBar
 import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
@@ -514,6 +515,7 @@ fun MemDetailScreen(vm: DeviceViewModel) {
     val mem by vm.mem.collectAsStateWithLifecycle()
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
     val swapApplyState by vm.swapApplyState.collectAsStateWithLifecycle()
+    val zramResizeEnabled by vm.zramResizeEnabled.collectAsStateWithLifecycle()
     val swapPercent = if (mem.swapTotalKb > 0) {
         mem.swapUsedKb * 100f / mem.swapTotalKb
     } else 0f
@@ -573,17 +575,37 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                         text = "调整会重建 zram 交换分区，可能导致正在使用交换区的应用短暂卡顿，请谨慎操作。",
                     )
                     Spacer(Modifier.height(10.dp))
+                    // 安全闸门：默认关闭。未开启时下方的容量控件整体置灰不可用，
+                    // 因为重建交换分区有副作用且不易回滚，不该「一进页面就能拖」。
+                    SwitchRow(
+                        label = "允许调整 ZRAM 容量",
+                        summary = "关闭时容量滑块与重建按钮不可用",
+                        checked = zramResizeEnabled,
+                        onCheckedChange = { vm.setZramResizeEnabled(it) },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    // 需要 Root 且已开启闸门，两个条件缺一不可
+                    val zramEditable = rootAvailable && zramResizeEnabled
                     var sizeGb by remember { mutableStateOf(4f) }
                     Text(
-                        text = "目标容量：%.1f GB".format(sizeGb),
+                        text = if (sizeGb <= 0.05f) {
+                            "目标容量：0 GB（关闭交换分区）"
+                        } else {
+                            "目标容量：%.1f GB".format(sizeGb)
+                        },
                         style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onBackground,
+                        color = if (zramEditable) {
+                            MiuixTheme.colorScheme.onBackground
+                        } else {
+                            MiuixTheme.colorScheme.onBackgroundVariant
+                        },
                     )
                     LiquidSlider(
                         value = sizeGb,
                         onValueChange = { sizeGb = it },
-                        valueRange = 1f..8f,
-                        enabled = rootAvailable,
+                        // 下限取 0：0 表示关闭该 zram 交换设备
+                        valueRange = 0f..8f,
+                        enabled = zramEditable,
                     )
                     Spacer(Modifier.height(8.dp))
                     LiquidNavTabs(
@@ -591,12 +613,22 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                         selectedIndex = -1,
                         onSelect = {
                             if (it == 0) {
-                                if (rootAvailable) vm.resizeZram((sizeGb * 1024f * 1024f).toLong())
+                                if (zramEditable) vm.resizeZram((sizeGb * 1024f * 1024f).toLong())
                             } else {
-                                sizeGb = (mem.zramTotalKb / 1024f / 1024f).coerceIn(1f, 8f)
+                                sizeGb = (mem.zramTotalKb / 1024f / 1024f).coerceIn(0f, 8f)
                             }
                         },
-                        enabled = true,
+                        enabled = zramEditable,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = if (!zramResizeEnabled) {
+                            "容量调整已锁定：开启上方开关后才可修改。范围 0 ~ 8 GB，0 表示关闭交换分区。"
+                        } else {
+                            "范围 0 ~ 8 GB；0 表示关闭交换分区，其余值会重建为对应容量。"
+                        },
+                        style = MiuixTheme.textStyles.footnote2,
+                        color = MiuixTheme.colorScheme.onBackgroundVariant,
                     )
                 }
             }

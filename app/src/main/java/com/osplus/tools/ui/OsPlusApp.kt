@@ -14,6 +14,8 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.rounded.CleaningServices
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -102,6 +104,10 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
         // 记录按钮在录制中改红底以表达「再点一下是停止」。
         val rootAvailable by viewModel.rootAvailable.collectAsStateWithLifecycle()
         val fpsRecording by viewModel.fpsRecording.collectAsStateWithLifecycle()
+        // 电源页顶栏动作需要知道当前页签与是否已有记录。
+        // 只订阅布尔量：直接订阅每秒变化的样本列表会让整个根布局跟着每秒重组
+        val powerTab by viewModel.powerTab.collectAsStateWithLifecycle()
+        val powerHasRecord by viewModel.powerHasRecord.collectAsStateWithLifecycle()
         val c = osColors()
 
         // 预测性返回：优先退二级路由 → 其次回概览 → 已在概览则交还系统执行退出动画
@@ -197,6 +203,25 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                     icon = Icons.Rounded.Settings,
                                     contentDescription = "设置",
                                     onClick = { route = RouteSettings },
+                                    backdrop = topBarBackdrop,
+                                )
+                            }
+                            // 电源页的「耗电统计」页签上，把复制 / 删除放在顶栏右侧：
+                            // 这两个动作针对「本次记录」这个全局对象，属于页面级操作，
+                            // 而页面内的操作条会随列表滚动跑出屏幕
+                            if (rootTab == RootTab.Power && route == null && powerTab == 0) {
+                                OsTopBarAction(
+                                    icon = Icons.Rounded.ContentCopy,
+                                    contentDescription = "复制本次耗电记录",
+                                    enabled = powerHasRecord,
+                                    onClick = { viewModel.copyPowerRecord() },
+                                    backdrop = topBarBackdrop,
+                                )
+                                OsTopBarAction(
+                                    icon = Icons.Rounded.DeleteOutline,
+                                    contentDescription = "删除本次耗电记录",
+                                    enabled = powerHasRecord,
+                                    onClick = { viewModel.clearPowerRecord() },
                                     backdrop = topBarBackdrop,
                                 )
                             }

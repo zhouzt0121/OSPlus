@@ -66,10 +66,6 @@ import com.kyant.backdrop.highlight.Highlight
  */
 private val GlassBlurRadius = 14.dp
 
-/** 导航胶囊的圆角，与 `barShape` 保持一致；SDF 折射需要它来对齐真实轮廓 */
-private val GlassCornerRadius = 30.dp
-
-
 /**
  * 顶栏内容区高度。
  *

@@ -134,6 +134,9 @@ object MemDataSource {
      * 容量清零，导致「应用并重建」后 zram 容量恒为 0。
      *
      * 只重建当前活动的交换设备；没有活动交换设备时仅写容量，不做 mkswap/swapon。
+     *
+     * [sizeKb] 为 0 表示**关闭**该 zram 交换设备：只关交换并清零容量，
+     * 不执行 mkswap/swapon——0 字节的设备无法格式化，swapon 必然失败。
      */
     suspend fun resizeZram(sizeKb: Long): Boolean {
         val devices = File("/sys/block").listFiles()
@@ -148,11 +151,17 @@ object MemDataSource {
         var ok = true
         for (name in targets) {
             val dev = "/dev/block/$name"
-            val cmd = "$swapoff $dev 2>/dev/null; " +
-                "echo 1 > /sys/block/$name/reset 2>/dev/null; " +
-                "echo ${sizeKb * 1024} > /sys/block/$name/disksize; " +
-                "$mkswap $dev >/dev/null 2>&1; " +
-                "$swapon $dev -p 0 >/dev/null 2>&1"
+            val cmd = if (sizeKb <= 0L) {
+                "$swapoff $dev 2>/dev/null; " +
+                    "echo 1 > /sys/block/$name/reset 2>/dev/null; " +
+                    "echo 0 > /sys/block/$name/disksize"
+            } else {
+                "$swapoff $dev 2>/dev/null; " +
+                    "echo 1 > /sys/block/$name/reset 2>/dev/null; " +
+                    "echo ${sizeKb * 1024} > /sys/block/$name/disksize; " +
+                    "$mkswap $dev >/dev/null 2>&1; " +
+                    "$swapon $dev -p 0 >/dev/null 2>&1"
+            }
             ok = ok && Shell.run(cmd, root = true).success
             // 写后回读校验：disksize 写入失败时节点仍为 0
             val applied = readNodeKb("/sys/block/$name/disksize")
