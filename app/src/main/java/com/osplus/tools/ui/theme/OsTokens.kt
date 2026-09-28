@@ -126,10 +126,6 @@ fun osColors(): OsColors {
     }
 }
 
-/** 当前是否为深色主题 */
-@Composable
-fun osIsDark(): Boolean = osColors().isDark
-
 /**
  * 字号层级。
  *
@@ -152,6 +148,4 @@ object OsText {
     val caption = TextStyle(fontSize = 11.sp)
     /** 最小号说明文字 */
     val micro = TextStyle(fontSize = 10.sp)
-    /** 导航标签 */
-    val navLabel = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium)
 }

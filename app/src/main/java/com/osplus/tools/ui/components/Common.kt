@@ -264,44 +264,6 @@ fun SpecGrid(
  *
  * [trailing] 用于在数值右侧挂一个操作按钮（如内存行的「清理」）。
  */
-@Composable
-fun ProgressRow(
-    label: String,
-    value: String,
-    fraction: Float,
-    color: Color,
-    modifier: Modifier = Modifier,
-    barHeight: Dp = 7.dp,
-    trailing: (@Composable () -> Unit)? = null,
-) {
-    val c = osColors()
-    Column(modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = label,
-                style = OsText.label,
-                color = c.textPrimary,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = value,
-                style = OsText.value,
-                color = c.textPrimary,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (trailing != null) {
-                Spacer(Modifier.width(7.dp))
-                trailing()
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        UsageBar(fraction = fraction, color = color, barHeight = barHeight)
-    }
-}
-
 /** 带开关的设置行 */
 @Composable
 fun SwitchRow(
@@ -349,54 +311,6 @@ fun SwitchRow(
 }
 
 /** 指标磁贴：小标签 + 大数值 + 单位 + 说明 */
-@Composable
-fun StatTile(
-    label: String,
-    value: String,
-    unit: String = "",
-    accent: Color? = null,
-    modifier: Modifier = Modifier,
-    hint: String? = null,
-) {
-    val c = osColors()
-    Column(modifier = modifier.padding(vertical = 5.dp)) {
-        Text(
-            text = label,
-            style = OsText.caption,
-            color = c.textSecondary,
-        )
-        Spacer(Modifier.height(3.dp))
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(
-                text = value,
-                style = OsText.metric,
-                color = accent ?: c.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (unit.isNotEmpty()) {
-                Spacer(Modifier.width(3.dp))
-                Text(
-                    text = unit,
-                    style = OsText.caption,
-                    color = c.textSecondary,
-                    modifier = Modifier.padding(bottom = 3.dp),
-                )
-            }
-        }
-        hint?.let {
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = it,
-                style = OsText.micro,
-                color = c.textTertiary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-    }
-}
-
 /** 横向占用条：圆角轨道 + 圆角填充 */
 @Composable
 fun UsageBar(
@@ -436,78 +350,6 @@ fun UsageBar(
  * 浅色凹槽 + 白色滑块，选中项用品牌色文字；
  * 比 Miuix TabRow 更贴合本应用的视觉语言，也与卡片系统同源。
  */
-@Composable
-fun SegmentedTabs(
-    tabs: List<String>,
-    selectedIndex: Int,
-    onSelect: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val c = osColors()
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            // 槽体是一块**凹玻璃**：明暗反转 + 内阴影。
-            // 不是「浅一点的凸玻璃」——受光面位置不同才是凹陷感的来源。
-            .glassSurface(
-                shape = RoundedCornerShape(13.dp),
-                cornerRadius = 13.dp,
-                body = c.track,
-                concave = true,
-            )
-            .padding(3.dp)
-    ) {
-        Row(Modifier.fillMaxWidth()) {
-            tabs.forEachIndexed { index, label ->
-                val selected = index == selectedIndex
-                val bg by animateColorAsState(
-                    targetValue = if (selected) c.cardElevated else Color.Transparent,
-                    label = "segBg",
-                )
-                val fg by animateColorAsState(
-                    targetValue = if (selected) c.primary else c.textSecondary,
-                    label = "segFg",
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .then(
-                            if (selected) {
-                                // 选中项是一块凸起的玻璃小片，压在凹槽之上：
-                                // 凹槽 + 凸片是同一块玻璃的两种受力状态，材质语言才连贯
-                                Modifier.glassSurface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    cornerRadius = 10.dp,
-                                    body = bg,
-                                    elevation = 2.dp,
-                                )
-                            } else {
-                                Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(bg)
-                            }
-                        )
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { onSelect(index) }
-                        .padding(vertical = 8.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = label,
-                        style = OsText.label,
-                        color = fg,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
-    }
-}
-
 /** 提示条：用于展示权限缺失、写入未生效等状态 */
 @Composable
 fun NoticeBanner(

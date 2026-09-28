@@ -1,6 +1,8 @@
 package com.osplus.tools.vm
 
 import android.app.Application
+import android.content.ClipData
+import android.content.ClipboardManager
 import java.util.Locale
 import java.util.Date
 import java.text.SimpleDateFormat
@@ -12,17 +14,22 @@ import android.os.Environment
 import android.graphics.Canvas
 import android.graphics.Bitmap
 import android.content.ContentValues
+import android.util.Log
 import com.osplus.tools.core.FpsOverlayState
 import android.provider.Settings
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.osplus.tools.core.BatteryDataSource
+import com.osplus.tools.core.BatteryEnergy
 import com.osplus.tools.core.ChargeController
 import com.osplus.tools.core.CpuDataSource
 import com.osplus.tools.core.FpsRecorder
 import com.osplus.tools.core.GpuDataSource
 import com.osplus.tools.core.LiveMetrics
+import com.osplus.tools.core.LiveNotif
+import com.osplus.tools.core.NotifMetric
+import com.osplus.tools.core.PowerRecorder
 import com.osplus.tools.core.MemDataSource
 import com.osplus.tools.core.MemCleanResult
 import com.osplus.tools.core.AsoulGame
@@ -36,20 +43,29 @@ import com.osplus.tools.core.Preferences
 import com.osplus.tools.core.ProcessDataSource
 import com.osplus.tools.core.Shell
 import com.osplus.tools.core.SystemProbe
+import com.osplus.tools.service.FpsOverlayService
 import com.osplus.tools.ui.theme.AppThemeMode
 import com.osplus.tools.model.BatteryInfo
+import com.osplus.tools.model.AppCpuPoint
+import com.osplus.tools.model.AppDrainEntry
 import com.osplus.tools.model.CpuInfo
 import com.osplus.tools.model.GpuInfo
 import com.osplus.tools.model.MemInfo
 import com.osplus.tools.model.MetricSample
-import com.osplus.tools.model.PowerUsageEntry
+import com.osplus.tools.model.PowerRecordSummary
+import com.osplus.tools.model.PowerSample
+import com.osplus.tools.model.PowerSource
 import com.osplus.tools.model.ProcessEntry
+import com.osplus.tools.model.formatSpan
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -64,6 +80,8 @@ import kotlinx.coroutines.withContext
 class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
+        private const val TAG = "OSPlusVM"
+
         /** 采样间隔：1 秒 */
         const val SAMPLE_INTERVAL_MS = 1000L
 
@@ -100,9 +118,6 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     private val _processes = MutableStateFlow<List<ProcessEntry>>(emptyList())
     val processes: StateFlow<List<ProcessEntry>> = _processes.asStateFlow()
 
-    private val _powerUsage = MutableStateFlow<List<PowerUsageEntry>>(emptyList())
-    val powerUsage: StateFlow<List<PowerUsageEntry>> = _powerUsage.asStateFlow()
-
     private val _rootAvailable = MutableStateFlow(false)
     val rootAvailable: StateFlow<Boolean> = _rootAvailable.asStateFlow()
 
@@ -138,22 +153,43 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         Preferences.setMonetEnabled(context, enabled)
     }
 
+    /**
+     * ZRAM 容量调整的安全闸门。
+     *
+     * 关闭时容量滑块与「应用并重建」整体置灰且不执行——重建交换分区会短暂占用 IO、
+     * 让正在使用交换区的应用卡顿，因此默认关闭，需用户显式开启。
+     */
+    private val _zramResizeEnabled = MutableStateFlow(false)
+    val zramResizeEnabled: StateFlow<Boolean> = _zramResizeEnabled.asStateFlow()
+
+    fun setZramResizeEnabled(enabled: Boolean) {
+        _zramResizeEnabled.value = enabled
+        Preferences.setZramResizeEnabled(context, enabled)
+    }
+
 
     private var loopJob: Job? = null
     private var tick = 0L
 
     init {
-        // 若上次开启过悬浮窗，重新拉起服务，使界面状态与实际一致
+        // 呈现方式（实时任务通知 / 悬浮窗）与显示项必须在拉起服务之前恢复，
+        // 否则服务会先按默认值构建一次通知、再被真实值覆盖，出现一次可见的闪烁
+        LiveNotif.load(context)
+
+        // 若上次开启过跨应用监视，重新拉起服务，使界面状态与实际一致。
+        // 实时任务通知模式不需要悬浮窗权限，只有悬浮窗模式才需要
+        val needsOverlay = !LiveNotif.enabled.value
         if (Preferences.isFpsOverlayEnabled(context) &&
-            Settings.canDrawOverlays(context)
+            (!needsOverlay || Settings.canDrawOverlays(context))
         ) {
-            com.osplus.tools.service.FpsOverlayService.start(context)
+            FpsOverlayService.start(context)
         }
         _autoRefresh.value = Preferences.isAutoRefreshEnabled(context)
         _themeMode.value = runCatching {
             AppThemeMode.valueOf(Preferences.themeModeName(context))
         }.getOrDefault(AppThemeMode.System)
         _monet.value = Preferences.isMonetEnabled(context)
+        _zramResizeEnabled.value = Preferences.isZramResizeEnabled(context)
         FpsOverlayState.setAlpha(Preferences.overlayAlpha(context))
         viewModelScope.launch {
             _rootAvailable.value = Shell.isRootAvailable(force = true)
@@ -178,10 +214,23 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             while (isActive) {
                 val begin = System.currentTimeMillis()
                 if (_autoRefresh.value) {
-                    sampleOnce()
+                    // 单次采样失败绝不能终结整个循环。采样要拉起 root shell，
+                    // 任何一次异常都不该让监控永久停摆——循环一旦死掉，
+                    // 界面上只是数字不再变化，用户只能靠重启应用才能恢复。
+                    runCatching { sampleOnce() }
+                        .onFailure { Log.w(TAG, "采样失败，跳过本轮", it) }
                     // 每 5 个采样点做一次完整快照，降低开销
-                    if (tick % 5L == 0L) fullSnapshot()
+                    if (tick % 5L == 0L) runCatching { fullSnapshot() }
                     tick++
+                    // 录制期间按更低频率采应用侧数据：root `top` 一次要上百毫秒，
+                    // 每秒调用会明显抬高录制本身的功耗，反而污染被测对象
+                    if (PowerRecorder.recording.value &&
+                        tick % PowerRecorder.APP_SAMPLE_EVERY_TICKS == 0L
+                    ) {
+                        runCatching {
+                            PowerRecorder.sampleApps(context, System.currentTimeMillis())
+                        }
+                    }
                 }
                 val cost = System.currentTimeMillis() - begin
                 delay((SAMPLE_INTERVAL_MS - cost).coerceAtLeast(50L))
@@ -228,16 +277,42 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         // 2) 回落：直接使用瞬时电流节点，单位按数量级推断
-        if (tick.voltageMv > 0f && tick.currentRaw != 0L) {
-            val ua = if (kotlin.math.abs(tick.currentRaw) < 20_000L) {
-                tick.currentRaw * 1000L
-            } else {
-                tick.currentRaw
-            }
-            lastPowerMw = kotlin.math.abs(tick.voltageMv * ua / 1_000_000f)
+        val ua = normalizeCurrentUa(tick.currentRaw)
+        if (tick.voltageMv > 0f && ua != 0L) {
+            lastPowerMw = tick.voltageMv * ua / 1_000_000f
             return lastPowerMw
         }
         return 0f
+    }
+
+    /**
+     * 把瞬时电流节点归一到 µA（绝对值）。
+     *
+     * 不同内核把 `current_now` 记为 mA 或 µA，而**节点名不携带单位**，
+     * 只能按数量级判定：20 mA（= 20000 µA）以下不可能是有意义的整机电流，
+     * 因此小于该阈值时按 mA 解释并乘 1000。
+     */
+    private fun normalizeCurrentUa(raw: Long): Long {
+        if (raw == 0L) return 0L
+        val abs = kotlin.math.abs(raw)
+        return if (abs < 20_000L) abs * 1000L else abs
+    }
+
+    /**
+     * 充电功率（W）。
+     *
+     * 只在**确实接入充电器**时给值：放电时 `current_now` 同样非零，
+     * 不做接入判断会把整机功耗误报成「充电速度」。
+     * 接入状态取自 [BatteryDataSource] 的快照（每 5 秒刷新一次），
+     * 因此刚插上充电器时读数可能滞后最多 5 秒。
+     */
+    private fun estimateChargeW(tick: com.osplus.tools.core.ProbeTick): Float {
+        val plugged = _battery.value.plugged
+        if (plugged.isBlank() || plugged == "未连接") return 0f
+        val ua = normalizeCurrentUa(tick.currentRaw)
+        if (ua <= 0L || tick.voltageMv <= 0f) return 0f
+        // mV × µA = 1e-9 W
+        return tick.voltageMv * ua / 1_000_000_000f
     }
 
     /**
@@ -276,6 +351,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         val coreFreqs = CpuDataSource.readFreqs(cores)
         val fpsState = FpsRecorder.sample.value
         val powerMw = estimatePowerMw(tick, now)
+        val chargeW = estimateChargeW(tick)
 
         // 供桌面悬浮窗与前台服务通知显示；CPU 频率取各核平均（kHz → MHz）
         val cpuFreqMhz = if (coreFreqs.isEmpty()) 0 else (coreFreqs.average() / 1000.0).toInt()
@@ -286,7 +362,31 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             gpuMhz = if (tick.gpuMhz > 0) tick.gpuMhz.toInt() else -1,
             memAvailKb = (tick.memTotalKb - tick.memUsedKb).coerceAtLeast(0L),
             memTotalKb = tick.memTotalKb,
+            powerMw = powerMw,
+            batteryTempC = tick.batteryTempC,
+            chargeW = chargeW,
         )
+
+        // 耗电录制：喂一条采样。
+        //
+        // 电量取自电池快照（每 5 秒刷新）——电量本身以 1% 为步进，
+        // 每秒重读一次不会多出任何信息，反而多一次 binder 调用。
+        // 能量读数则每拍都取：ENERGY_COUNTER 是直接测量值，比按比例折算准。
+        val battery = _battery.value
+        val energy = BatteryDataSource.readEnergy(context, battery)
+        _batteryEnergy.value = energy
+        if (PowerRecorder.recording.value) {
+            PowerRecorder.onTick(
+                nowMs = now,
+                levelPercent = battery.levelPercent,
+                voltageMv = tick.voltageMv.toInt(),
+                tempC = tick.batteryTempC,
+                powerMw = powerMw,
+                charging = isExternallyPowered(battery),
+                remainWhNow = energy.remainWh,
+                fullWhNow = energy.fullWh,
+            )
+        }
 
         val sample = MetricSample(
             timeMs = now,
@@ -353,11 +453,15 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun refreshPowerUsage() {
+    /**
+     * 重新读取「使用情况访问」授权状态。
+     *
+     * 用户可能在设置页里刚授予权限再切回来，所以耗电统计页每次进入都重读一次，
+     * 而不是只在进程启动时读一次。
+     */
+    fun refreshUsageAccess() {
         viewModelScope.launch {
             _usageAccess.value = PowerStatsDataSource.hasUsageAccess(context)
-            _powerUsage.value = runCatching { PowerStatsDataSource.read(context) }
-                .getOrDefault(emptyList())
         }
     }
 
@@ -442,8 +546,15 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 调整 ZRAM 容量（KB），会重建交换分区 */
+    /**
+     * 调整 ZRAM 容量（KB），会重建交换分区。
+     *
+     * 闸门在 ViewModel 侧再挡一次：界面已把控件置灰，但状态可能被别处改写，
+     * 这里拒绝执行可以保证「未开启就绝不会真的重建交换分区」。
+     * 容量 0 表示关闭该 zram 交换设备，由 [MemDataSource.resizeZram] 处理。
+     */
     fun resizeZram(sizeKb: Long) {
+        if (!_zramResizeEnabled.value) return
         viewModelScope.launch {
             withContext(Dispatchers.IO) { MemDataSource.resizeZram(sizeKb) }
             fullSnapshot()
@@ -510,6 +621,63 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         val v = value.coerceIn(FpsOverlayState.MIN_ALPHA, 1f)
         FpsOverlayState.setAlpha(v)
         Preferences.setOverlayAlpha(context, v)
+    }
+
+    // ---------------- 实时任务通知的呈现方式与显示项 ----------------
+
+    /** true = 用实时任务通知；false = 用悬浮窗 */
+    val liveNotifEnabled: StateFlow<Boolean> = LiveNotif.enabled
+
+    /** 通知 / 悬浮窗中显示的指标项，1~[LiveNotif.MAX_METRICS] 项 */
+    val notifMetrics: StateFlow<List<NotifMetric>> = LiveNotif.metrics
+
+    /**
+     * 通知模式下是否保留「保活锚点」（1×1 不可见悬浮窗）。
+     * 关闭后通知在后台约 5~10 秒即停更——这是系统的冻结行为，不是应用能绕过的。
+     */
+    val notifKeepAlive: StateFlow<Boolean> = LiveNotif.keepAlive
+
+    fun setNotifKeepAlive(enabled: Boolean) {
+        LiveNotif.setKeepAlive(context, enabled)
+    }
+
+    /** 悬浮窗权限是否已授予；关闭实时任务通知（切到悬浮窗）的前提 */
+    fun canDrawOverlay(): Boolean = Settings.canDrawOverlays(context)
+
+    /**
+     * 切换呈现方式。
+     *
+     * 同时确保前台服务在运行——否则用户改完开关看不到任何变化，
+     * 会以为功能没生效。切到悬浮窗需要悬浮窗权限，未授权时**不切换**
+     * （界面负责提示并引导授权），避免出现「开关已关、通知却还在」的错位。
+     */
+    fun setLiveNotifEnabled(enabled: Boolean) {
+        if (!enabled && !canDrawOverlay()) return
+        LiveNotif.setEnabled(context, enabled)
+        Preferences.setFpsOverlayEnabled(context, true)
+        FpsOverlayService.start(context)
+    }
+
+    /**
+     * 勾选 / 取消一个指标项。
+     *
+     * 数量被夹在 [LiveNotif.MIN_METRICS]..[LiveNotif.MAX_METRICS] 之间：
+     * 上限来自系统的「展开态最多 3 项指标」，下限来自 MetricStyle 不接受空样式。
+     * 达到边界时静默忽略本次点击，界面同步把这些项置灰。
+     */
+    fun toggleNotifMetric(metric: NotifMetric) {
+        val current = LiveNotif.metrics.value
+        val next = when {
+            metric in current && current.size > LiveNotif.MIN_METRICS -> current - metric
+            metric !in current && current.size < LiveNotif.MAX_METRICS -> current + metric
+            else -> return
+        }
+        LiveNotif.setMetrics(context, next)
+    }
+
+    /** 恢复出厂默认显示项（帧率 / CPU 占用 / GPU 占用） */
+    fun resetNotifMetrics() {
+        LiveNotif.setMetrics(context, LiveNotif.defaultMetrics)
     }
 
     fun startFpsRecording() {
@@ -596,6 +764,155 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             _rootAvailable.value = Shell.isRootAvailable(force = true)
         }
     }
+
+    // ---------------- 耗电录制 ----------------
+
+    /** 是否正在录制耗电 */
+    val powerRecording: StateFlow<Boolean> = PowerRecorder.recording
+
+    /** 本次录制的全部采样点（1 秒 1 条，上限 2 小时） */
+    val powerSamples: StateFlow<List<PowerSample>> = PowerRecorder.samples
+
+    /** 本次录制的汇总：平均功耗 / 理论续航 / 能量 */
+    val powerSummary: StateFlow<PowerRecordSummary> = PowerRecorder.summary
+
+    /** 本次录制期间的应用耗电明细 */
+    val powerDrains: StateFlow<List<AppDrainEntry>> = PowerRecorder.appDrains
+
+    /** 本次录制期间各应用的 CPU 占用时间序列（曲线图用） */
+    val powerCpuSeries: StateFlow<List<AppCpuPoint>> = PowerRecorder.appCpuSeries
+
+    /**
+     * 是否存在本次记录。
+     *
+     * 顶栏动作只需要知道「按钮能不能点」，**不能直接订阅 [powerSamples]**：
+     * 那个列表每秒都在变，根布局一旦订阅它就会跟着每秒重组一次，
+     * 连顶栏按钮一起重建——录制期间点击会变得不灵敏。
+     * 这里用 `map + stateIn` 把「每秒变化」收敛成「只在有/无之间翻转」。
+     */
+    val powerHasRecord: StateFlow<Boolean> = PowerRecorder.samples
+        .map { it.isNotEmpty() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** 电池能量读数（Wh），随采样刷新 */
+    private val _batteryEnergy = MutableStateFlow(BatteryEnergy())
+    val batteryEnergy: StateFlow<BatteryEnergy> = _batteryEnergy.asStateFlow()
+
+    /**
+     * 电源页当前页签。
+     *
+     * 放在 ViewModel 而不是页面里：顶栏由根布局渲染，要根据它决定
+     * 是否显示「复制 / 删除本次记录」两个动作——页内状态无法被顶栏读到。
+     */
+    private val _powerTab = MutableStateFlow(0)
+    val powerTab: StateFlow<Int> = _powerTab.asStateFlow()
+
+    fun setPowerTab(index: Int) {
+        _powerTab.value = index
+    }
+
+    /** 开始录制。会先清空上一次记录，避免两次录制的曲线接在一起 */
+    fun startPowerRecording() {
+        viewModelScope.launch { PowerRecorder.start(context) }
+    }
+
+    /** 结束录制并锁定本次记录 */
+    fun stopPowerRecording() {
+        viewModelScope.launch { PowerRecorder.stop(context) }
+    }
+
+    /** 丢弃本次记录 */
+    fun clearPowerRecord() {
+        PowerRecorder.clear()
+    }
+
+    /**
+     * 「已复制」回执。
+     *
+     * 放在 ViewModel 而不是页面里：复制有两个入口（顶栏图标、卡内操作条），
+     * 而回执原本只是页面内的一个局部状态——于是顶栏复制会**静默成功**，
+     * 用户点完看不到任何反馈，只能靠猜。两个入口现在读同一个状态。
+     */
+    private val _powerCopied = MutableStateFlow(false)
+    val powerCopied: StateFlow<Boolean> = _powerCopied.asStateFlow()
+
+    /**
+     * 把本次记录写入剪贴板，返回是否成功。
+     *
+     * 放在 ViewModel 而不是页面里：顶栏的「复制」动作由根布局渲染，
+     * 它拿不到页面内的 Context，也不该为了复制而各自去取一次剪贴板服务。
+     */
+    fun copyPowerRecord(): Boolean {
+        val text = powerRecordText()
+        if (text.isEmpty()) return false
+        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            ?: return false
+        val ok = runCatching {
+            cm.setPrimaryClip(ClipData.newPlainText("OSPlus 耗电记录", text))
+            true
+        }.getOrDefault(false)
+        if (ok) {
+            _powerCopied.value = true
+            viewModelScope.launch {
+                delay(3_000)
+                _powerCopied.value = false
+            }
+        }
+        return ok
+    }
+
+    /**
+     * 把本次记录汇总成可粘贴的纯文本，供顶栏「复制」使用。
+     *
+     * 有意做成文本而不是图表截图：贴到聊天/笔记里要的是可检索的数字，
+     * 截图既不可搜索也无法二次计算。
+     */
+    fun powerRecordText(): String {
+        val samples = PowerRecorder.samples.value
+        if (samples.isEmpty()) return ""
+        val s = PowerRecorder.summary.value
+        val last = samples.last()
+        return buildString {
+            appendLine("OSPlus 耗电记录")
+            appendLine(
+                "时长 ${formatSpan(s.durationMs)} ｜ 电量 ${s.startLevel}% → ${s.endLevel}%" +
+                    "（${if (s.levelDrop >= 0) "-" else "+"}${kotlin.math.abs(s.levelDrop)}%）"
+            )
+            if (s.charging) {
+                appendLine("录制期间处于充电状态，未计算耗电功耗")
+            } else if (s.avgPowerW > 0f) {
+                val method = when (s.source) {
+                    PowerSource.Current -> "电流法"
+                    PowerSource.LevelDelta -> "电量差法"
+                    PowerSource.Unavailable -> "—"
+                }
+                appendLine("平均功耗 %.2f W（%s）".format(s.avgPowerW, method))
+                appendLine("理论续航 ${formatSpan(s.theoreticalRemainMs)}")
+            } else {
+                appendLine("平均功耗不可用（电流与电量差都不足以推算）")
+            }
+            if (s.fullWh > 0f) {
+                appendLine("电池能量 %.1f Wh ｜ 剩余 %.1f Wh".format(s.fullWh, s.remainWh))
+            }
+            last.tempC?.let { appendLine("温度 %.1f ℃".format(it)) }
+            if (last.voltageMv > 0) appendLine("电压 %.3f V".format(last.voltageMv / 1000f))
+            appendLine("采样 ${samples.size} 条")
+            val top = PowerRecorder.appDrains.value.take(5)
+            if (top.isNotEmpty()) {
+                appendLine("耗电前列（CPU 加权估算）：")
+                top.forEach { appendLine("  ${it.label}  %.1f%%".format(it.drainPercent)) }
+            }
+        }.trim()
+    }
+
+    /**
+     * 是否处于外部供电。
+     *
+     * 用 `plugged` 而不是 `status`：`status` 的取值里「未充电」也含「充电」二字，
+     * 用 `contains("充电")` 判断会把「未充电」误判成充电中。
+     */
+    private fun isExternallyPowered(b: BatteryInfo): Boolean =
+        b.plugged.isNotBlank() && b.plugged != "未连接"
 
     // ---------------- 性能调度（Uperf / A-SOUL 模块） ----------------
 

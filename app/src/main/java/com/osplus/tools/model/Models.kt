@@ -77,6 +77,8 @@ data class BatteryInfo(
     val chargingEnabled: Boolean? = null,
     val chargeFullDesignUah: Long = -1L,
     val chargeFullUah: Long = -1L,
+    /** 设计能量（µWh）；部分机型只暴露能量节点而不暴露容量节点 */
+    val energyFullDesignUwh: Long = -1L,
     val cycleCount: Int = -1,
 )
 
@@ -89,16 +91,6 @@ data class ProcessEntry(
     val rssKb: Long = 0L,
     val state: String = "",
     val packageName: String? = null,
-)
-
-/** 应用耗电条目 */
-data class PowerUsageEntry(
-    val packageName: String,
-    val label: String,
-    val foregroundMs: Long = 0L,
-    val backgroundMs: Long = 0L,
-    /** 估算耗电占比 0~100 */
-    val percent: Float = 0f,
 )
 
 /** 帧率采样快照 */
@@ -177,8 +169,7 @@ data class FpsRecord(
  *
  * 采样器按固定间隔产出本对象，UI 侧保留最近 5 秒窗口用于绘制柱状图。
  */
-data class MetricSample(
-    /** 采样时刻（System.currentTimeMillis） */
+data class MetricSample(    /** 采样时刻（System.currentTimeMillis） */
     val timeMs: Long = 0L,
     /** CPU 总占用 0~100 */
     val cpuLoad: Float = 0f,
@@ -199,4 +190,108 @@ data class MetricSample(
     /** 电池温度摄氏度 */
     val batteryTempC: Float? = null,
 ) {
+}
+
+// ---------------- 耗电录制 ----------------
+
+/**
+ * 一次耗电录制中的单条采样（1 秒 1 条）。
+ *
+ * 只保留**绘制曲线与事后计算所需**的字段，不存原始 sysfs 文本：
+ * 7200 条的样本量下，多存一个字符串就会让常驻内存明显上升。
+ */
+data class PowerSample(
+    /** 采样时刻（System.currentTimeMillis） */
+    val timeMs: Long = 0L,
+    /** 相对录制开始的偏移，曲线的时间轴用它 */
+    val elapsedMs: Long = 0L,
+    /** 电量百分比 0~100 */
+    val levelPercent: Int = -1,
+    /** 端电压 mV */
+    val voltageMv: Int = -1,
+    /** 温度 ℃；不可读为 null */
+    val tempC: Float? = null,
+    /** 瞬时功耗 mW；<= 0 表示不可读 */
+    val powerMw: Float = 0f,
+    /** 采样这一刻是否在充电 */
+    val charging: Boolean = false,
+)
+
+/** 平均功耗的计算来源——决定界面上要不要打「估算」标记 */
+enum class PowerSource {
+    /** 由电流（电压 × 电流）求得，精度最高 */
+    Current,
+
+    /** 由电量差与额定能量反推；只在电流不可读时使用，短录制误差大 */
+    LevelDelta,
+
+    /** 数据不足，无法给出 */
+    Unavailable,
+}
+
+/** 录制期间单个应用的耗电明细 */
+data class AppDrainEntry(
+    val packageName: String,
+    val label: String = "",
+    /** 录制期间的前台时长 */
+    val foregroundMs: Long = 0L,
+    /** 录制期间的平均 CPU 占用（%） */
+    val cpuPercentAvg: Float = 0f,
+    /** 估算耗电占比 0~100 */
+    val drainPercent: Float = 0f,
+)
+
+/**
+ * 应用侧 CPU 占用的一个时间点。
+ *
+ * 用于「使用场景 → 曲线图」：Android 没有按应用的功率接口，
+ * 只能以 CPU 占用作为代理指标画多序列曲线。
+ */
+data class AppCpuPoint(
+    val elapsedMs: Long = 0L,
+    /** 包名 → 该时刻的 CPU 占用（%） */
+    val cpuByPackage: Map<String, Float> = emptyMap(),
+)
+
+/** 一次耗电录制的汇总 */
+data class PowerRecordSummary(
+    val durationMs: Long = 0L,
+    val startLevel: Int = -1,
+    val endLevel: Int = -1,
+    /** 平均功耗 W；0 表示不可用 */
+    val avgPowerW: Float = 0f,
+    /** 电池额定总能量 Wh；0 表示不可读 */
+    val fullWh: Float = 0f,
+    /** 当前剩余能量 Wh */
+    val remainWh: Float = 0f,
+    /** 理论续航时长 ms；0 表示不可推算 */
+    val theoreticalRemainMs: Long = 0L,
+    val charging: Boolean = false,
+    val source: PowerSource = PowerSource.Unavailable,
+    /** 录制时长是否足够（不足时估算不准，界面要明确提示） */
+    val reliable: Boolean = false,
+) {
+    /** 本次录制掉了多少电（百分点） */
+    val levelDrop: Int get() = if (startLevel >= 0 && endLevel >= 0) startLevel - endLevel else 0
+}
+
+/**
+ * 时长格式化：不足 1 分钟给秒，超过给「时分」，超过 24 小时给「天时分」。
+ *
+ * 与 [FpsRecord] 那套 `mm:ss` 时钟格式不同——这里表达的是「还能用多久」这类
+ * 跨度可能长达十几小时的量，`10h47m` 比 `10:47:00` 更好读。
+ */
+fun formatSpan(ms: Long): String {
+    if (ms <= 0L) return "-"
+    val totalSec = ms / 1000
+    val d = totalSec / 86_400
+    val h = (totalSec % 86_400) / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return when {
+        d > 0 -> "${d}天${h}小时"
+        h > 0 -> "${h}h${"%02d".format(m)}m"
+        m > 0 -> "${m}m${"%02d".format(s)}s"
+        else -> "${s}s"
+    }
 }

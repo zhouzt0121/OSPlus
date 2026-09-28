@@ -1,9 +1,11 @@
 package com.osplus.tools.core
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import java.io.DataOutputStream
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 /**
  * 统一的命令执行入口。
@@ -60,6 +62,20 @@ object Shell {
     }
 
     /**
+     * 单条命令的超时上限。
+     *
+     * **必须有超时。** [run] 内部是阻塞式 `waitFor`，而 `su` 在应用退到后台后可能
+     * 长时间不返回（授权对话框无法在后台弹出、root 守护进程被挂起等）。
+     * 一旦挂住，调用它的采样循环就永远停在原地，且**不会自愈**——实测表现为
+     * 「切到后台约 10 秒后所有实时数据冻结、通知不再刷新」，同时进程 CPU 增量归零、
+     * 前台服务仍在运行，从外面看完全查不出原因。
+     *
+     * 超时后强杀子进程并返回失败结果，采样循环得以进入下一轮，最坏情况只是
+     * 本轮读数缺失，而不是整个监控停摆。
+     */
+    private const val COMMAND_TIMEOUT_MS = 5_000L
+
+    /**
      * 执行一条 shell 命令。
      *
      * @param command 命令正文
@@ -77,10 +93,35 @@ object Shell {
                 val process = ProcessBuilder(*cmd).apply {
                     redirectErrorStream(false)
                 }.start()
-                val stdout = process.inputStream.bufferedReader().readText()
-                val stderr = process.errorStream.bufferedReader().readText()
-                val code = process.waitFor()
-                CommandResult(code == 0, stdout.trim(), stderr.trim(), code)
+                // stdout / stderr 必须**并发**读。串行的「先把 stdout 读到 EOF、再读 stderr」
+                // 会在另一个管道被写满（约 64 KB）时互相死锁：父进程在等 stdout 关闭，
+                // 子进程在等 stderr 被读走。
+                //
+                // 读取体**必须自己吞掉异常**：超时分支会 `destroyForcibly()` 关掉管道，
+                // 此时挂起的 `readText()` 会抛 IOException。作为 `async` 子协程，
+                // 这个异常会沿 Job 层级取消父协程、**绕过外层的 runCatching**，
+                // 最终冒到采样循环之外把整个应用打崩（真机已复现过该崩溃）。
+                val stdout = async(Dispatchers.IO) {
+                    runCatching { process.inputStream.bufferedReader().readText() }
+                        .getOrDefault("")
+                }
+                val stderr = async(Dispatchers.IO) {
+                    runCatching { process.errorStream.bufferedReader().readText() }
+                        .getOrDefault("")
+                }
+                if (!process.waitFor(COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    process.destroyForcibly()
+                    // 等子进程真正消失，管道的写端随之关闭，两个读协程即刻返回
+                    runCatching { process.waitFor(500, TimeUnit.MILLISECONDS) }
+                    return@runCatching CommandResult(
+                        success = false,
+                        stdout = "",
+                        stderr = "命令超时（${COMMAND_TIMEOUT_MS}ms），已强制结束",
+                        exitCode = -1,
+                    )
+                }
+                val code = process.exitValue()
+                CommandResult(code == 0, stdout.await().trim(), stderr.await().trim(), code)
             }.getOrElse { e ->
                 CommandResult(false, "", e.message ?: e.toString())
             }
@@ -113,7 +154,11 @@ object Shell {
                 os.writeBytes("exit\n")
                 os.flush()
             }
-            process.waitFor()
+            // 同样必须有超时：su 挂住时这里会永久阻塞
+            if (!process.waitFor(COMMAND_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                process.destroyForcibly()
+                return@runCatching false
+            }
             true
         }.getOrDefault(false) || run("echo '$value' > $path", root = true).success
     }

@@ -24,6 +24,7 @@ import android.provider.Settings
 import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.style.ForegroundColorSpan
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -32,31 +33,39 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.RemoteViews
 import android.widget.TextView
+import androidx.annotation.RequiresApi
 import com.osplus.tools.MainActivity
 import com.osplus.tools.OsPlusApplication
 import com.osplus.tools.R
 import com.osplus.tools.core.FpsOverlayState
 import com.osplus.tools.core.FpsRecorder
 import com.osplus.tools.core.LiveMetrics
+import com.osplus.tools.core.LiveNotif
+import com.osplus.tools.core.NotifMetric
 import com.osplus.tools.core.Preferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
- * 跨应用帧率悬浮窗。
+ * 跨应用实时监视前台服务，提供两种互斥的呈现方式：
  *
- * 需要 SYSTEM_ALERT_WINDOW 权限，以 specialUse 前台服务常驻。
+ * - **实时任务通知**（默认，见 [LiveNotif.enabled]）：Android 17+ 走系统
+ *   `MetricStyle` 实时任务通知，状态栏芯片常驻；**不需要悬浮窗权限**。
+ * - **悬浮窗**：`TYPE_APPLICATION_OVERLAY` 窗口，需要 `SYSTEM_ALERT_WINDOW`。
+ *   悬浮窗是本进程的可见窗口，系统会持续投递 vsync，因此它同时充当
+ *   「跨应用帧率采样源」——服务启动后驱动共享的 [FpsRecorder]，
+ *   应用退到后台时录制仍会继续（前台服务保活）。
  *
- * 关键点：悬浮窗本身是本进程的可见窗口，系统会持续向本进程投递 vsync，
- * 因此它同时充当「跨应用帧率采样源」——服务启动后驱动共享的 [FpsRecorder]，
- * 应用退到后台时录制仍会继续（前台服务保活 + 悬浮窗持续收到帧回调），
- * 从而支持在**其他应用**中记录帧率。
+ * 两种方式显示的指标项由用户在设置页勾选（最多 3 项，见 [LiveNotif]），
+ * 服务订阅其 StateFlow，因此切换方式或改动显示项都无需重启服务。
  *
  * 悬浮窗可拖动，位置与不透明度都会持久化，下次启动沿用上次的落点。
  */
@@ -65,6 +74,10 @@ class FpsOverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private var overlayView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
+
+    /** 保活锚点（1×1 不可见窗口），与悬浮窗互斥，见 [addAnchor] */
+    private var anchorView: View? = null
+    private var anchorParams: WindowManager.LayoutParams? = null
 
     /** 用户设定的不透明度；拖动时临时提到 1.0，松手后恢复 */
     private var userAlpha = 0.92f
@@ -77,7 +90,8 @@ class FpsOverlayService : Service() {
         // 通知 action：直接在实时任务通知上开始 / 停止帧率记录
         if (intent?.action == ACTION_TOGGLE_RECORDING) {
             FpsRecorder.toggleRecording()
-            updateNotification()
+            // 立即刷新一次，不等下一个 1 秒节拍，让标题与按钮文案马上翻转
+            refreshLiveReadouts()
         }
         return START_STICKY
     }
@@ -89,35 +103,75 @@ class FpsOverlayService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         userAlpha = Preferences.overlayAlpha(this).coerceIn(FpsOverlayState.MIN_ALPHA, 1f)
         FpsOverlayState.setAlpha(userAlpha)
-        // 悬浮窗已由实时任务通知代替：跨应用监视不再依赖悬浮窗窗口，
-        // 也就不再需要 SYSTEM_ALERT_WINDOW 权限。addOverlay 代码保留以备回滚。
 
         // 与录制功能共用同一个逐帧统计器，避免两套 Choreographer 互相干扰
         FpsRecorder.overlayHolds = true
         FpsRecorder.start()
+
+        // 呈现方式：实时任务通知 ↔ 悬浮窗；通知模式下还要跟随保活开关增减锚点。
+        // 订阅而非只在 onCreate 读一次，因此在设置页切换后无需重启服务即可生效
         scope.launch {
-            // 只显示三个数值：帧率 / CPU 占用 / GPU 占用；记录中在前面加一个红点
-            combine(
-                FpsRecorder.sample,
-                LiveMetrics.cpuLoad,
-                LiveMetrics.gpuLoad,
-                FpsRecorder.recording,
-            ) { fps, cpu, gpu, recording -> OverlayValues(fps.fps, cpu, gpu, recording) }
-                .collectLatest { v ->
-                    overlayView?.text = buildOverlayText(v)
-                }
+            combine(LiveNotif.enabled, LiveNotif.keepAlive) { enabled, _ -> enabled }
+                .collectLatest { enabled -> applyPresentation(enabled) }
         }
-        // 通知实时状态：每秒一次的采样快照驱动通知两行数值刷新
+
+        // 实时读数刷新节拍。
+        //
+        // 三处显示——抽屉置顶卡片、状态栏芯片、TYPE_APPLICATION_OVERLAY 悬浮窗——
+        // 统一按 1 秒刷新，用独立节拍而不是「数据源一变就刷」：帧率与系统指标是两条
+        // 各自 1 秒的流，直接订阅会在同一秒内触发两次重建（通知被 notify() 两次、
+        // 悬浮窗文字被改写两次），既浪费，也让刷新频率无法确定。这里固定成 1 Hz。
         scope.launch {
-            combine(LiveMetrics.snapshot, FpsRecorder.recording) { s, rec -> s to rec }
-                .collectLatest { (s, _) ->
-                    updateNotification()
-                }
+            while (isActive) {
+                refreshLiveReadouts()
+                delay(REFRESH_INTERVAL_MS)
+            }
         }
+
         // 界面调整不透明度后立即作用到窗口，无需重启服务
         scope.launch {
             FpsOverlayState.alpha.collectLatest { value -> applyAlpha(value) }
         }
+    }
+
+    /** 取当前一刻的实时读数快照，供悬浮窗与通知共用 */
+    private fun currentOverlayValues() = OverlayValues(
+        fps = FpsRecorder.sample.value.fps,
+        snapshot = LiveMetrics.snapshot.value,
+        recording = FpsRecorder.recording.value,
+        metrics = LiveNotif.metrics.value,
+    )
+
+    /**
+     * 刷新一次实时读数：悬浮窗文字 + 通知（通知同时承载抽屉置顶卡片与状态栏芯片）。
+     *
+     * 由 1 秒节拍驱动；切换呈现方式、点通知按钮切换记录这类用户动作也会立即调用一次，
+     * 让反馈不必等到下一个节拍。
+     */
+    private fun refreshLiveReadouts() {
+        overlayView?.text = buildOverlayText(currentOverlayValues())
+        updateNotification()
+    }
+
+    /**
+     * 应用当前的呈现方式（并同步锚点）。
+     *
+     * 三种组合：
+     * - 通知模式 + 保活开 → 只挂 1×1 锚点，通知后台可持续刷新；
+     * - 通知模式 + 保活关 → 不挂任何窗口，通知在后台约 5~10 秒后被系统冻结而停更；
+     * - 悬浮窗模式 → 悬浮窗本身就是可见窗口，锚点多余，摘掉。
+     *
+     * 悬浮窗与锚点都需要 [Settings.canDrawOverlays]；未授权时静默降级。
+     */
+    private fun applyPresentation(liveNotif: Boolean) {
+        if (liveNotif) {
+            removeOverlay()
+            if (LiveNotif.keepAlive.value) addAnchor() else removeAnchor()
+        } else {
+            removeAnchor()
+            if (Settings.canDrawOverlays(this)) addOverlay()
+        }
+        refreshLiveReadouts()
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -133,7 +187,8 @@ class FpsOverlayService : Service() {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setPadding(26, 12, 26, 12)
-            text = "--   --%   --%"
+            // 首帧占位：具体数值由 LiveMetrics 的第一次采样填入
+            text = "--"
             this.background = background
             elevation = 8f * resources.displayMetrics.density
             // 视觉透明度挂在 View 上，见 applyAlpha 的说明
@@ -163,6 +218,68 @@ class FpsOverlayService : Service() {
         runCatching { windowManager.addView(view, params) }
         overlayView = view
         layoutParams = params
+    }
+
+    /** 摘掉悬浮窗窗口（切回实时任务通知模式、或服务销毁时调用） */
+    private fun removeOverlay() {
+        overlayView?.let { v -> runCatching { windowManager.removeView(v) } }
+        overlayView = null
+        layoutParams = null
+    }
+
+    /**
+     * 挂上「保活锚点」：一个 1×1 的不可见悬浮窗。
+     *
+     * **它不显示任何东西，唯一目的是让本进程持有可见窗口。**
+     *
+     * ColorOS 的冻结框架（`OplusHansManager` / `oplus_freeze`）会在应用退到后台
+     * 约 5~10 秒后冻结整个进程，前台服务不足以豁免，AOSP 的
+     * `cached_apps_freezer` 开关也管不到它；一旦冻上，进程拿不到任何 CPU，
+     * 采样与通知刷新全部停摆（实测 `cgroup.freeze=1`、CPU 增量 0）。
+     * 而该框架的目标是**后台应用**——持有可见窗口的进程不属于后台，
+     * 因此不会被选中（实测悬浮窗模式下后台 CPU 持续增长、全程 `freeze=0`）。
+     *
+     * 三条实现约束：
+     * - **窗口 alpha 必须是 1.0**：0 会被判定为「不可见」，锚点就白挂了；
+     * - **`FLAG_NOT_TOUCHABLE`**：绝不拦截任何触摸；
+     * - 需要 `SYSTEM_ALERT_WINDOW` 权限，未授权时静默跳过（功能自动降级）。
+     */
+    private fun addAnchor() {
+        if (anchorView != null) return
+        if (!Settings.canDrawOverlays(this)) return
+        val view = View(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            alpha = 1f
+        }
+        val params = WindowManager.LayoutParams(
+            1,
+            1,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+            alpha = 1f
+        }
+        val ok = runCatching { windowManager.addView(view, params) }.isSuccess
+        if (ok) {
+            anchorView = view
+            anchorParams = params
+            Log.i(TAG, "保活锚点已挂上（1×1 不可见窗口）")
+        } else {
+            Log.w(TAG, "保活锚点挂载失败")
+        }
+    }
+
+    /** 摘掉保活锚点（切到悬浮窗模式、关闭保活开关、或服务销毁时调用） */
+    private fun removeAnchor() {
+        anchorView?.let { v -> runCatching { windowManager.removeView(v) } }
+        anchorView = null
+        anchorParams = null
     }
 
     /**
@@ -266,13 +383,9 @@ class FpsOverlayService : Service() {
         }
     }
 
-    /** 窗上文字：记录中在数值前加一个红点，表示正在留档 */
+    /** 窗上文字：按用户勾选的指标项拼接；记录中在数值前加一个红点，表示正在留档 */
     private fun buildOverlayText(v: OverlayValues): CharSequence {
-        val body = "%.0f   %.0f%%   %s".format(
-            v.fps,
-            v.cpu,
-            if (v.gpu >= 0) "${v.gpu}%" else "--",
-        )
+        val body = v.metrics.joinToString("   ") { compact(it, v.snapshot, v.fps) }
         if (!v.recording) return body
         val sb = SpannableStringBuilder()
         sb.append("● ")
@@ -288,10 +401,37 @@ class FpsOverlayService : Service() {
 
     private data class OverlayValues(
         val fps: Float,
-        val cpu: Float,
-        val gpu: Int,
+        val snapshot: LiveMetrics.Snapshot,
         val recording: Boolean,
+        val metrics: List<NotifMetric>,
     )
+
+    /**
+     * 单个指标的紧凑文案，供悬浮窗与状态栏芯片共用。
+     *
+     * 读不到的指标一律显示 `--`，而不是 0——「读不到」与「就是 0」是两回事，
+     * 后者会让人误以为显卡闲着、电池不热。
+     *
+     * [withUnit] 给状态栏芯片用：芯片孤零零挂在状态栏上，没有上下文，
+     * 只写 `60` 看不出是帧率还是别的；写 `60FPS` 才能自解释
+     * （≤7 字符才会被完整显示）。悬浮窗里多个数值并排，上下文已足够，故不带单位。
+     */
+    private fun compact(
+        m: NotifMetric,
+        s: LiveMetrics.Snapshot,
+        fps: Float,
+        withUnit: Boolean = false,
+    ): String = when (m) {
+        NotifMetric.Fps -> if (withUnit) "%.0fFPS".format(fps) else "%.0f".format(fps)
+        NotifMetric.CpuLoad -> "%.0f%%".format(s.cpuLoad)
+        NotifMetric.CpuFreq -> if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"
+        NotifMetric.GpuLoad -> if (s.gpuLoad >= 0) "${s.gpuLoad}%" else "--"
+        NotifMetric.GpuFreq -> if (s.gpuMhz > 0) fmtFreq(s.gpuMhz) else "--"
+        NotifMetric.MemUsed -> "%.0f%%".format(s.memUsedPercent)
+        NotifMetric.Power -> if (s.powerMw > 0f) "%.0fmW".format(s.powerMw) else "--"
+        NotifMetric.BatteryTemp -> s.batteryTempC?.let { "%.1f℃".format(it) } ?: "--"
+        NotifMetric.ChargeSpeed -> if (s.chargeW > 0f) "%.1fW".format(s.chargeW) else "--"
+    }
 
     /** 限制在屏幕内，避免被拖出可视区域后找不回来 */
     private fun clampX(x: Int, view: View): Int {
@@ -305,132 +445,196 @@ class FpsOverlayService : Service() {
     }
 
     /**
-     * 前台服务通知：自定义 RemoteViews + App 内预渲染的「凝光」材质 Bitmap。
+     * 构建前台服务通知。
      *
-     * RemoteViews 不支持自定义 View / Canvas / Shader，玻璃质感无法在通知里实时画，
-     * 所以材质在 App 进程里预渲染成一张图塞进 [android.widget.ImageView]，
-     * 两行实时数值用 RemoteViews 的 TextView 叠在图上：
-     * 第一行 CPU（频率、占用）与 GPU（频率、占用），第二行内存（可用 / 全部）。
+     * 分两种呈现方式，由 [LiveNotif.enabled] 决定：
      *
-     * 通知渠道走标准 [android.app.NotificationChannel]（OsPlusApplication 里注册），
-     * 更新只走 [NotificationManager.notify]，保持完全原生通知。
-     */
-    /**
-     * 构建通知。
+     * 1. **实时任务通知**（开关开启）：Android 17（API 37）起可用系统的
+     *    [Notification.MetricStyle] + `setRequestPromotedOngoing(true)`，
+     *    通知被提升为抽屉顶部卡片、状态栏芯片常驻。官方明确 promoted 通知
+     *    **不得携带 customContentView（RemoteViews）**，否则直接失去资格，
+     *    因此这一分支不挂任何自定义视图。指标项取自 [LiveNotif.metrics]。
      *
-     * Android 16+（API 36）：**实时任务通知（Live Updates / promoted ongoing）**——
-     * 走系统标准 [Notification.MetricStyle]（CPU/GPU/内存五项指标），
-     * 请求系统提升为实时任务卡片：通知抽屉顶部、锁屏与状态栏芯片常驻展示。
-     * 官方明确 promoted 通知**不得携带 customContentView（RemoteViews）**，
-     * 否则直接失去资格，因此此分支不挂自定义视图。
+     * 2. **悬浮窗 / 旧系统**（开关关闭，或系统低于 API 37）：回退为
+     *    RemoteViews 凝光玻璃卡片——RemoteViews 不支持自定义 View / Canvas / Shader，
+     *    玻璃材质在 App 进程里预渲染成一张 Bitmap 塞进 ImageView。
      *
-     * Android 12–15：系统没有实时任务机制，回退为 RemoteViews 凝光玻璃卡片。
+     * 版本判断用 `CINNAMON_BUN`(37) 而不是 `BAKLAVA`(36)：`MetricStyle` 的引入级别
+     * 是 **37**（SDK 的 api-versions.xml 记为 `since="37.0"`），在 API 36 上引用它
+     * 会 `NoClassDefFoundError` 直接崩掉前台服务。提升分支整体包在 runCatching 里，
+     * 任一步失败都退回卡片而不是崩溃。
      */
     private fun buildNotification(): Notification {
+        val recording = FpsRecorder.recording.value
+        val metrics = LiveNotif.metrics.value
+        val title = if (recording) "OSPlus 正在记录" else "OSPlus 实时状态"
+
+        if (LiveNotif.enabled.value && Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+            val promoted = runCatching {
+                buildPromotedNotification(metrics, title, recording)
+            }.onFailure {
+                // 不能让回退静默发生：卡片「没被提升」在界面上完全看不出原因，
+                // 只能靠 dumpsys 反推。这里留下可检索的痕迹。
+                Log.w(TAG, "实时任务通知构建失败，回退为凝光卡片", it)
+            }.getOrNull()
+            if (promoted != null) return promoted
+        }
+        return buildCardNotification(metrics)
+    }
+
+    /**
+     * 通知构建的公共头。
+     *
+     * **两个分支各自 new 一个，绝不跨分支复用同一个 Builder**：
+     * Builder 是可变的，若提升分支在 `build()` 抛异常前已经写入
+     * `setStyle(MetricStyle)` / `setRequestPromotedOngoing(true)`，
+     * 回退分支再往同一个 Builder 上挂 RemoteViews，就会得到一条
+     * 「既声明提升、又带自定义视图」的通知——而官方明确禁止 promoted
+     * 通知携带 customContentView，系统会直接丢弃它。
+     */
+    private fun baseNotificationBuilder(): Notification.Builder {
         val intent = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val builder = Notification.Builder(this, OsPlusApplication.CHANNEL_FLUID)
+        return Notification.Builder(this, OsPlusApplication.CHANNEL_FLUID)
             .setSmallIcon(R.drawable.ic_notify)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(intent)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-            val s = LiveMetrics.snapshot.value
-            val fps = FpsRecorder.sample.value.fps
-            val recording = FpsRecorder.recording.value
-            val memText = if (s.memTotalKb > 0) {
-                "%.1f/%.1fGB".format(s.memAvailKb / 1048576f, s.memTotalKb / 1048576f)
-            } else {
-                "--"
-            }
-            val toggleIntent = PendingIntent.getService(
-                this,
-                1,
-                Intent(this, FpsOverlayService::class.java).setAction(ACTION_TOGGLE_RECORDING),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            val toggleAction = Notification.Action.Builder(
-                Icon.createWithResource(this, R.drawable.ic_notify),
-                if (recording) "停止记录" else "开始记录",
-                toggleIntent,
-            ).build()
-            val style = Notification.MetricStyle()
-                .addMetric(
-                    Notification.Metric(
-                        Notification.Metric.FixedFloat(fps, "FPS"),
-                        "帧率",
-                    ),
-                )
-                .addMetric(
-                    Notification.Metric(
-                        Notification.Metric.FixedInt(s.cpuLoad.roundToInt(), "%"),
-                        "CPU 占用",
-                    ),
-                )
-                .addMetric(
-                    Notification.Metric(
-                        Notification.Metric.FixedText(if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"),
-                        "CPU 频率",
-                    ),
-                )
-                .addMetric(
-                    Notification.Metric(
-                        Notification.Metric.FixedInt(if (s.gpuLoad >= 0) s.gpuLoad else 0, "%"),
-                        "GPU 占用",
-                    ),
-                )
-                .addMetric(
-                    Notification.Metric(
-                        Notification.Metric.FixedText(if (s.gpuMhz > 0) fmtFreq(s.gpuMhz) else "--"),
-                        "GPU 频率",
-                    ),
-                )
-                .addMetric(
-                    Notification.Metric(Notification.Metric.FixedText(memText), "内存 可用/全部"),
-                )
-                .setCriticalMetric(0)
-            return builder
-                .setContentTitle(if (recording) "OSPlus 正在记录" else "OSPlus 实时状态")
-                .setStyle(style)
-                .setRequestPromotedOngoing(true)
-                // 状态栏芯片常驻显示帧率（代替悬浮窗的跨应用帧率读取）
-                .setShortCriticalText("%.0fFPS".format(fps))
-                .addAction(toggleAction)
-                .build()
-        }
+    }
+
+    /**
+     * 实时任务通知分支（API 37+）。
+     *
+     * 指标项在 [LiveNotif] 侧已收敛到 1~3 项，这里再 `take(3)` 作为第二道防线：
+     * 多传的项会被系统**静默丢弃**（不报错），只表现为「勾了却没显示」，很难排查。
+     */
+    @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
+    private fun buildPromotedNotification(
+        metrics: List<NotifMetric>,
+        title: String,
+        recording: Boolean,
+    ): Notification {
+        val s = LiveMetrics.snapshot.value
+        val fps = FpsRecorder.sample.value.fps
+        val shown = metrics.take(LiveNotif.MAX_METRICS).ifEmpty { LiveNotif.defaultMetrics }
+
+        val style = Notification.MetricStyle()
+        shown.forEach { m -> style.addMetric(metricOf(m, s, fps)) }
+
+        // 关键指标：优先帧率（折叠态与状态栏芯片最常看它），未勾选时取第一项
+        val critical = shown.indexOf(NotifMetric.Fps).takeIf { it >= 0 } ?: 0
+        style.setCriticalMetric(critical)
+
+        val toggleIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, FpsOverlayService::class.java).setAction(ACTION_TOGGLE_RECORDING),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val toggleAction = Notification.Action.Builder(
+            Icon.createWithResource(this, R.drawable.ic_notify),
+            if (recording) "停止记录" else "开始记录",
+            toggleIntent,
+        ).build()
+
+        return baseNotificationBuilder()
+            .setContentTitle(title)
+            .setStyle(style)
+            .setRequestPromotedOngoing(true)
+            // 状态栏芯片显示关键指标的紧凑文案（≤7 字符才会完整显示）
+            .setShortCriticalText(compact(shown[critical], s, fps, withUnit = true))
+            .addAction(toggleAction)
+            .build()
+    }
+
+    /**
+     * RemoteViews 凝光卡片分支（悬浮窗模式 / API 36 及以下 / 提升分支失败时的退路）。
+     *
+     * RemoteViews 不支持自定义 View / Canvas / Shader，玻璃材质在 App 进程里
+     * 预渲染成一张 Bitmap 塞进 ImageView。
+     */
+    private fun buildCardNotification(metrics: List<NotifMetric>): Notification {
         val views = RemoteViews(packageName, R.layout.notification_liquid_card)
         views.setImageViewBitmap(R.id.notif_glass_bg, glassBitmap())
-        applyNotificationText(views)
+        applyNotificationText(views, metrics)
         // DecoratedCustomViewStyle 让系统为自定义视图套上标准通知外壳；
         // 小图标必须用单色原生 ic_notify，彩色 mipmap 会被状态栏渲染成白色色块
-        return builder
+        return baseNotificationBuilder()
             .setCustomContentView(views)
             .setCustomBigContentView(views)
             .setStyle(Notification.DecoratedCustomViewStyle())
             .build()
     }
 
-    /** 把两行实时数值写进 RemoteViews；数据取 [LiveMetrics.snapshot] 的最新值 */
-    private fun applyNotificationText(views: RemoteViews) {
-        val s = LiveMetrics.snapshot.value
-        val cpuFreq = if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"
-        val cpuLoad = "%.0f%%".format(s.cpuLoad)
-        val gpuFreq = if (s.gpuMhz > 0) fmtFreq(s.gpuMhz) else "--"
-        val gpuLoad = if (s.gpuLoad >= 0) "${s.gpuLoad}%" else "--"
-        val recording = FpsRecorder.recording.value
-        val dot = if (recording) "● " else ""
-        views.setTextViewText(
-            R.id.notif_line1,
-            "${dot}CPU $cpuFreq · $cpuLoad    GPU $gpuFreq · $gpuLoad",
+    /**
+     * 单个指标对应的系统 Metric。
+     *
+     * 值类型按「读得到什么」选：频率 / 功耗 / 充电速度是格式化文本（单位已含在文本里），
+     * 占用率与帧率是数值，温度是浮点——数值型的单位交给系统渲染，展开态会并到标签后。
+     *
+     * 标签一律取 [NotifMetric.notifLabel]（短标签）：系统把卡片宽度均分给每个指标，
+     * 字号与列宽都由系统模板决定、应用改不了，长标签会被直接截断。
+     */
+    @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
+    private fun metricOf(
+        m: NotifMetric,
+        s: LiveMetrics.Snapshot,
+        fps: Float,
+    ): Notification.Metric = when (m) {
+        NotifMetric.Fps -> Notification.Metric(
+            Notification.Metric.FixedFloat(fps, "FPS"), m.notifLabel,
         )
-        val totalGb = s.memTotalKb / 1024.0 / 1024.0
-        val availGb = s.memAvailKb / 1024.0 / 1024.0
-        val memText = if (totalGb > 0) "%.1f GB / %.1f GB".format(availGb, totalGb) else "--"
-        views.setTextViewText(R.id.notif_line2, "内存 $memText")
+        NotifMetric.CpuLoad -> Notification.Metric(
+            Notification.Metric.FixedInt(s.cpuLoad.roundToInt(), "%"), m.notifLabel,
+        )
+        NotifMetric.CpuFreq -> Notification.Metric(
+            Notification.Metric.FixedText(if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"),
+            m.notifLabel,
+        )
+        NotifMetric.GpuLoad -> Notification.Metric(
+            Notification.Metric.FixedInt(if (s.gpuLoad >= 0) s.gpuLoad else 0, "%"), m.notifLabel,
+        )
+        NotifMetric.GpuFreq -> Notification.Metric(
+            Notification.Metric.FixedText(if (s.gpuMhz > 0) fmtFreq(s.gpuMhz) else "--"),
+            m.notifLabel,
+        )
+        NotifMetric.MemUsed -> Notification.Metric(
+            Notification.Metric.FixedInt(s.memUsedPercent.roundToInt(), "%"), m.notifLabel,
+        )
+        NotifMetric.Power -> Notification.Metric(
+            Notification.Metric.FixedText(if (s.powerMw > 0f) "%.0fmW".format(s.powerMw) else "--"),
+            m.notifLabel,
+        )
+        NotifMetric.BatteryTemp -> Notification.Metric(
+            s.batteryTempC
+                ?.let { Notification.Metric.FixedFloat(it, "℃") }
+                ?: Notification.Metric.FixedText("--"),
+            m.notifLabel,
+        )
+        NotifMetric.ChargeSpeed -> Notification.Metric(
+            Notification.Metric.FixedText(if (s.chargeW > 0f) "%.1fW".format(s.chargeW) else "--"),
+            m.notifLabel,
+        )
+    }
+
+    /**
+     * 把用户勾选的指标写进 RemoteViews 卡片（悬浮窗模式 / API 36 及以下的回退分支）。
+     *
+     * 卡片只有两行文本：第 1 行放前两项、第 2 行放第三项。
+     * 选满 3 项时正好铺满两行，选 1~2 项时第 2 行留空。
+     */
+    private fun applyNotificationText(views: RemoteViews, metrics: List<NotifMetric>) {
+        val s = LiveMetrics.snapshot.value
+        val fps = FpsRecorder.sample.value.fps
+        val shown = metrics.take(LiveNotif.MAX_METRICS).ifEmpty { LiveNotif.defaultMetrics }
+        val dot = if (FpsRecorder.recording.value) "● " else ""
+        val parts = shown.map { "${it.label} ${compact(it, s, fps)}" }
+        views.setTextViewText(R.id.notif_line1, dot + parts.take(2).joinToString("  ·  "))
+        views.setTextViewText(R.id.notif_line2, parts.drop(2).joinToString("  ·  "))
     }
 
     /** MHz → 「2.05GHz」/「855MHz」 */
@@ -516,9 +720,8 @@ class FpsOverlayService : Service() {
     override fun onDestroy() {
         FpsOverlayState.set(false)
         scope.cancel()
-        overlayView?.let { v -> runCatching { windowManager.removeView(v) } }
-        overlayView = null
-        layoutParams = null
+        removeOverlay()
+        removeAnchor()
         cachedGlass?.recycle()
         cachedGlass = null
         // 仍在记录时不要停掉统计器，否则记录会被中断
@@ -528,7 +731,17 @@ class FpsOverlayService : Service() {
     }
 
     companion object {
+        private const val TAG = "OSPlusNotif"
+
         private const val NOTIFICATION_ID = 0x0521
+
+        /**
+         * 实时读数的刷新周期（毫秒）。
+         *
+         * 抽屉置顶卡片、状态栏芯片与悬浮窗三处共用这一个节拍，
+         * 与 ViewModel 的采样间隔（1 秒）一致，因此显示与数据同频。
+         */
+        private const val REFRESH_INTERVAL_MS = 1000L
 
         /** 通知「开始/停止记录」按钮的 action */
         private const val ACTION_TOGGLE_RECORDING = "com.osplus.tools.action.TOGGLE_FPS_RECORDING"
