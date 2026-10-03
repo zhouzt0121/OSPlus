@@ -14,9 +14,18 @@
 |---|---|---|
 | `LiquidBottomBar` | `ui/components/LiquidGlass.kt` | 底部悬浮导航栏（本文主角）：玻璃底 + 选中胶囊 + 点击/拖动切页 |
 | `LiquidBarItem` | 同上 | 底栏条目模型（label + icon） |
-| `OsTopBar` / `OsTopBarAction` / `OsTopBarPillAction` | `ui/components/Navigation.kt` | 统一顶栏 + 圆形/胶囊玻璃按钮 |
-| `LiquidNavTabs` | `ui/components/Common.kt` | 页内分段控件（46dp 圆角条 + spring 胶囊） |
-| `LiquidToggle` / `LiquidSlider` / `LiquidGlassButton` | `ui/components/LiquidGlass.kt` | 全应用换装的开关 / 滑块 / 按钮 |
+| `OsTopBar` / `OsTopBarAction` / `OsTopBarPillAction` | `ui/components/Navigation.kt` | 统一顶栏 + 圆形/胶囊玻璃按钮（**正圆 36dp**，均由原版 `LiquidButton` 渲染） |
+| `LiquidNavTabs` | `ui/components/Common.kt` | 页内分段控件（内部即原版 `LiquidBottomTabs`，13 处调用点共用） |
+| `ChoiceChip` | 同上 | 单选胶囊（原版 `LiquidButton` + tint 浅灰保底可见） |
+| `LiquidToggle` / `LiquidSlider` | `ui/components/LiquidGlass.kt` | 全应用换装的开关 / 滑块 |
+| `LiquidButton` / `LiquidBottomTabs` / `LiquidBottomTab` / `LiquidToggle` / `LiquidSlider` / `LiquidUtils` | `ui/liquid/` | Kyant0 原版移植件——**渲染主体**，逻辑与上游保持一致 |
+
+> 2.5.0 起，**按钮没有适配层**：页面内按钮、顶栏圆形/胶囊按钮、`ChoiceChip` 一律由调用点
+> 直接引用 `ui/liquid/LiquidButton`。原版把 `height(48.dp)` 与 `padding(horizontal = 16.dp)`
+> 写死在组件内、外部 modifier 覆盖不了，因此给原版加了两个带默认值的参数
+> （`height` / `horizontalPadding`）——默认值即原版值，顶栏传 `36dp` 得到正圆。
+> 分段条则相反：`LiquidNavTabs` 保留名字与签名、内部换成原版 `LiquidBottomTabs`，
+> 让 13 处调用点零改动。
 
 ### 2. 技术选型：用 Kyant0 官方 backdrop 库，不自绘
 

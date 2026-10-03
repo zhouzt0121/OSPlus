@@ -44,3 +44,12 @@ AndroidLiquidGlass-kmp/
 
 # ----- 下载的第三方参考实现（非本工程代码） -----
 liquid-glass-react-master/
+
+# ----- 临时验证产物（截图 / dump，非工程文件） -----
+.shots/
+
+# ----- 第三方应用的逆向分析笔记（非本工程代码） -----
+.metric-ref/
+
+# ----- 求职材料（与本工程无关） -----
+job_hunt/

@@ -94,6 +94,8 @@ fun OverviewScreen(
 ) {
     val history by vm.history.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
+    // 提权通道能力表：健康状态用它判断「有没有通道」，而不是「有没有 root」
+    val capabilities by vm.capabilities.collectAsStateWithLifecycle()
     val gpu by vm.gpu.collectAsStateWithLifecycle()
     val mem by vm.mem.collectAsStateWithLifecycle()
     val battery by vm.battery.collectAsStateWithLifecycle()
@@ -112,7 +114,8 @@ fun OverviewScreen(
     val samples: List<MetricSample> = history
     val latest = samples.lastOrNull()
 
-    val cpuLoad = latest?.cpuLoad ?: 0f
+    // 兜底必须是「不可读」而不是 0f：没有采样记录时显示 0% 会让人以为 CPU 闲着
+    val cpuLoad = latest?.cpuLoad ?: com.osplus.tools.core.LiveMetrics.UNREADABLE
     val gpuLoad = gpu.loadPercent
     val memPercent = latest?.memUsedPercent ?: 0f
     // SoC 结温与电池温度分别取值、分别判据：两者正常区间相差几十度，
@@ -123,7 +126,9 @@ fun OverviewScreen(
         battery.plugged.contains("AC") || battery.plugged.contains("无线")
 
     val health = evaluateHealth(
-        rootAvailable = rootAvailable,
+        // 传「是否有提权通道」而不是「是否有 root」：ADB / Shizuku 同样是
+        // 可用状态，不该被判成异常
+        privilegeAvailable = capabilities.available,
         socTempC = socTempC,
         batteryTempC = batteryTempC,
         memPercent = memPercent,
@@ -174,12 +179,12 @@ fun OverviewScreen(
                 ) {
                     OsMetricRing(
                         label = "CPU",
-                        valueText = "%.0f".format(cpuLoad),
+                        valueText = if (cpuLoad < 0f) "--" else "%.0f".format(cpuLoad),
                         unit = "%",
                         hint = cpu.clusters.maxOfOrNull { it.curKhz }
                             ?.let { "${it / 1000} MHz" }
                             ?: "不可读",
-                        progress = cpuLoad / 100f,
+                        progress = (cpuLoad.coerceAtLeast(0f)) / 100f,
                         accent = ChartColors.cpu,
                         modifier = Modifier.align(Alignment.CenterHorizontally),
                     )
@@ -388,7 +393,7 @@ private data class Health(val level: HealthLevel, val title: String, val detail:
  * 与同一屏里「电池健康 良好」自相矛盾。
  */
 private fun evaluateHealth(
-    rootAvailable: Boolean,
+    privilegeAvailable: Boolean,
     socTempC: Float?,
     batteryTempC: Float?,
     memPercent: Float,
@@ -396,11 +401,16 @@ private fun evaluateHealth(
     levelPercent: Int,
     charging: Boolean,
 ): Health {
-    if (!rootAvailable) {
+    // 判据是「有没有提权通道」，不是「有没有 root」。
+    // ADB / Shizuku 是完全合法的使用方式（能读 CPU 占用与频率、能管进程），
+    // 原实现用 rootAvailable 判断，导致 ADB 模式下概览页常年挂着一条
+    // 「未获取 Root 权限」的黄色警告，与同一屏里正常显示的数据自相矛盾。
+    if (!privilegeAvailable) {
         return Health(
             level = HealthLevel.Warn,
-            title = "未获取 Root 权限",
-            detail = "频率控制、进程管理、充电控制不可用；信息读取正常",
+            title = "未启用提权通道",
+            detail = "CPU 占用、网络、磁盘 IO 等需要 shell 身份的数据不可读；" +
+                "可在设置中启用 ADB / Shizuku / Root",
         )
     }
     // SoC 结温阈值按内核 thermal 的降频尺度取：85 ℃ 接近关核/降频，72 ℃ 是持续满载的预警线

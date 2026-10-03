@@ -2,12 +2,8 @@ package com.osplus.tools.ui.components
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,12 +18,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -50,11 +43,8 @@ import com.osplus.tools.ui.theme.osColors
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import com.kyant.backdrop.Backdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.vibrancy
-import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.highlight.Highlight
+import com.kyant.backdrop.backdrops.emptyBackdrop
+import com.osplus.tools.ui.liquid.LiquidButton
 
 /**
  * 液态玻璃的背景模糊半径。
@@ -72,10 +62,18 @@ private val GlassBlurRadius = 14.dp
  * 所有页面共用同一个常量，且顶栏只在根布局里渲染一次，
  * 因此「概览 / 性能 / 帧率 / 电源 / 四个详情页 / 设置」的顶栏高度、内边距、
  * 字号与按钮尺寸完全一致——不会出现某页高一点、某页矮一点的错位。
+ *
+ * 按钮 36dp + 上下各 10dp 留白 = 56dp。顶栏按钮是原版 `LiquidButton`，
+ * 但尺寸由 [TopBarActionSize] 显式传入（原版默认 48dp 是 iOS 规格，对手机顶栏偏大）。
  */
 val TopBarHeight = 56.dp
 
-/** 顶栏圆形按钮的直径 */
+/**
+ * 顶栏按钮的边长。
+ *
+ * 图标按钮传成正方形（配合原版 `LiquidButton` 的 `CapsuleShape`）就是**正圆**；
+ * 胶囊按钮用它当高度，宽度由内容撑开。
+ */
 private val TopBarActionSize = 36.dp
 
 /**
@@ -132,11 +130,26 @@ fun OsTopBar(
 }
 
 /**
- * 顶栏圆形按钮。
+ * 顶栏图标按钮（原版 `LiquidButton`）——**正圆**。
  *
- * 用浅色圆底 + 发丝描边，而不是纯图标：概览页顶栏并排放着四个动作，
- * 无底色的图标会糊成一条，圆底给每个动作划出明确的点击范围，
- * 也让「这里可以点」在一条没有文字的顶栏里仍然成立。
+ * 玻璃体、按压放大、拖动位移全部由原版组件提供，这里只负责三件「原版不关心」的事：
+ *
+ * - **图标与语义**：原版 `content` 是 `RowScope`，图标直接放进去即可。
+ * - **禁用态**：原版没有 `enabled`，用 `isInteractive = enabled`；它不会拦截点击，
+ *   所以调用方仍要自己守卫（顶栏的「清内存 / 清交换」在 `OsPlusApp` 里已判过）。
+ *   半透明是外加的：`modifier.alpha()` 在原版 `modifier` 链最外层，不改原版行为。
+ * - **backdrop 兜底**：顶栏拿到的是独立录制的 `topBarBackdrop`（真实可折射），
+ *   取不到时退 `emptyBackdrop()`。
+ *
+ * ### 为什么必须显式传尺寸才能是正圆
+ *
+ * 原版 `LiquidButton` 默认 48dp 高、内容区左右各 16dp 内边距。图标按钮的内容只有
+ * 一个 19dp 图标 → 宽度 `19 + 16×2 = 51dp`、高度 48dp，`CapsuleShape`（圆角 = 短边
+ * 的一半）会把 51×48 画成**椭圆**。
+ *
+ * 外部 `Modifier` 压不回来：`.height(48.dp)` 在链尾永远最后生效，`requiredSize()`
+ * 也只能压高度，内部 16dp 内边距仍会把内容区挤没。所以这里走原版新增的
+ * `height` / `horizontalPadding` 参数：正方形 + 零内边距 = 正圆。
  */
 @Composable
 fun OsTopBarAction(
@@ -149,53 +162,15 @@ fun OsTopBarAction(
     backdrop: Backdrop? = null,
 ) {
     val c = osColors()
-    val actionShape = RoundedCornerShape(percent = 50)
-    // 必须在 composable 上下文里先取好颜色。
-    // onDrawSurface 的 lambda 是 DrawScope 作用域、不是可组合作用域，
-    // 在里面调 @Composable 的 LiquidGlassColors.container() 会编译不过。
-    val container = LiquidGlassColors.container()
-    // 透视只在按压时出现，静止时是纯毛玻璃（与底栏/开关/按钮统一）
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val press by animateFloatAsState(
-        targetValue = if (pressed) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f),
-        label = "topBarPress",
-    )
-    Box(
-        modifier = modifier
-            .size(TopBarActionSize)
-            .then(
-                if (backdrop != null) {
-                    // 官方 LiquidButton 的写法：vibrancy + blur 常开，
-                    // lens 随按压渐入；高光与玻璃体都交给 drawBackdrop。
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { actionShape },
-                        effects = {
-                            vibrancy()
-                            blur(2f.dp.toPx())
-                            lens(12f.dp.toPx() * press, 24f.dp.toPx() * press)
-                        },
-                        highlight = { Highlight.Default },
-                        onDrawSurface = { drawRect(container) },
-                    )
-                } else {
-                    // 拿不到背景时兜底：只铺官方容器色，不画自绘棱光。
-                    Modifier
-                        .clip(actionShape)
-                        .background(LiquidGlassColors.container())
-                }
-            )
-            .then(
-                if (enabled) {
-                    Modifier.pressable(interactionSource = interaction, onClick = onClick)
-                } else {
-                    Modifier
-                }
-            )
-            .alpha(if (enabled) 1f else 0.4f),
-        contentAlignment = Alignment.Center,
+    LiquidButton(
+        onClick = onClick,
+        backdrop = backdrop ?: emptyBackdrop(),
+        modifier = modifier.size(TopBarActionSize).alpha(if (enabled) 1f else 0.4f),
+        isInteractive = enabled,
+        surfaceColor = LiquidGlassColors.container(),
+        height = TopBarActionSize,
+        // 零内边距：宽度完全由 36dp 的正方形约束决定，多一分都会破圆
+        horizontalPadding = 0.dp,
     ) {
         Icon(
             imageVector = icon,
@@ -214,7 +189,9 @@ fun OsTopBarAction(
  * 图标更是让人误以为是刷新。重绘成带文字的胶囊：动作含义一眼可读，
  * 与右侧的圆形图标按钮在视觉上也区分出「一键执行类」与「导航类」。
  *
- * 玻璃材质与 [OsTopBarAction] 完全一致：静止纯毛玻璃，按压时折射渐入。
+ * 玻璃材质与 [OsTopBarAction] 完全一致：两者现在都是原版 `LiquidButton`，
+ * 差别只在 `content`（本组件多一个文字标签）与宽度（图标按钮是定宽正圆，
+ * 本组件高度固定 36dp、宽度由内容撑开）。
  */
 @Composable
 fun OsTopBarPillAction(
@@ -227,48 +204,14 @@ fun OsTopBarPillAction(
     backdrop: Backdrop? = null,
 ) {
     val c = osColors()
-    val pillShape = RoundedCornerShape(percent = 50)
-    val container = LiquidGlassColors.container()
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val press by animateFloatAsState(
-        targetValue = if (pressed) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.72f, stiffness = 480f),
-        label = "topBarPillPress",
-    )
-    Row(
-        modifier = modifier
-            .height(TopBarActionSize)
-            .then(
-                if (backdrop != null) {
-                    Modifier.drawBackdrop(
-                        backdrop = backdrop,
-                        shape = { pillShape },
-                        effects = {
-                            vibrancy()
-                            blur(2f.dp.toPx())
-                            lens(12f.dp.toPx() * press, 24f.dp.toPx() * press)
-                        },
-                        highlight = { Highlight.Default },
-                        onDrawSurface = { drawRect(container) },
-                    )
-                } else {
-                    Modifier
-                        .clip(pillShape)
-                        .background(LiquidGlassColors.container())
-                }
-            )
-            .then(
-                if (enabled) {
-                    Modifier.pressable(interactionSource = interaction, onClick = onClick)
-                } else {
-                    Modifier
-                }
-            )
-            .alpha(if (enabled) 1f else 0.4f)
-            .padding(horizontal = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    LiquidButton(
+        onClick = onClick,
+        backdrop = backdrop ?: emptyBackdrop(),
+        modifier = modifier.alpha(if (enabled) 1f else 0.4f),
+        isInteractive = enabled,
+        surfaceColor = LiquidGlassColors.container(),
+        height = TopBarActionSize,
+        horizontalPadding = 11.dp,
     ) {
         Icon(
             imageVector = icon,

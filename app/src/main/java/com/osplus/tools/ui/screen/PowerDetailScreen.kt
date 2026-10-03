@@ -67,9 +67,11 @@ import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
-import com.osplus.tools.ui.components.LiquidGlassButton
+import com.osplus.tools.ui.components.LiquidGlassColors
 import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.LiquidSlider
+import com.osplus.tools.ui.liquid.LiquidButton
+import com.kyant.backdrop.backdrops.emptyBackdrop
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import com.osplus.tools.ui.components.bottomBarContentPadding
@@ -733,14 +735,18 @@ private fun ChargeControlTab(vm: DeviceViewModel) {
             }
         }
         item {
-            LiquidGlassButton(onClick = {
-                runCatching {
-                    context.startActivity(
-                        Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
-                }
-            }) { Text("打开系统电池设置") }
+            LiquidButton(
+                onClick = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                },
+                backdrop = emptyBackdrop(),
+                surfaceColor = LiquidGlassColors.container(),
+            ) { Text("打开系统电池设置") }
         }
     }
 }

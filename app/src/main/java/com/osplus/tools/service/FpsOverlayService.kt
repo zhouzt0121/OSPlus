@@ -82,6 +82,9 @@ class FpsOverlayService : Service() {
     /** 用户设定的不透明度；拖动时临时提到 1.0，松手后恢复 */
     private var userAlpha = 0.92f
 
+    /** 当前悬浮窗形态（复刻 Metric 的导航循环），启动时恢复上次的选择 */
+    private var form = Preferences.OverlayForm.PILL
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -103,6 +106,7 @@ class FpsOverlayService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         userAlpha = Preferences.overlayAlpha(this).coerceIn(FpsOverlayState.MIN_ALPHA, 1f)
         FpsOverlayState.setAlpha(userAlpha)
+        form = Preferences.overlayForm(this)
 
         // 与录制功能共用同一个逐帧统计器，避免两套 Choreographer 互相干扰
         FpsRecorder.overlayHolds = true
@@ -150,7 +154,32 @@ class FpsOverlayService : Service() {
      */
     private fun refreshLiveReadouts() {
         overlayView?.text = buildOverlayText(currentOverlayValues())
+        // 形态不同字号不同：负载面板行多、字号略小；迷你模式更小
+        overlayView?.setTextSize(
+            TypedValue.COMPLEX_UNIT_SP,
+            when (form) {
+                Preferences.OverlayForm.LOAD -> 12f
+                Preferences.OverlayForm.MINI -> 11f
+                Preferences.OverlayForm.PILL -> 14f
+            },
+        )
         updateNotification()
+    }
+
+    /**
+     * 轻点胶囊 → 三种形态循环切换（复刻 Metric 的悬浮导航）。
+     *
+     * PILL → LOAD → MINI → PILL。切换立即生效并持久化，
+     * 下次启动直接用上次选中的形态。位置在形态间共享，不会因切换而跳位。
+     */
+    private fun cycleForm() {
+        form = when (form) {
+            Preferences.OverlayForm.PILL -> Preferences.OverlayForm.LOAD
+            Preferences.OverlayForm.LOAD -> Preferences.OverlayForm.MINI
+            Preferences.OverlayForm.MINI -> Preferences.OverlayForm.PILL
+        }
+        Preferences.setOverlayForm(this, form)
+        refreshLiveReadouts()
     }
 
     /**
@@ -363,9 +392,10 @@ class FpsOverlayService : Service() {
                     if (dragging) {
                         Preferences.setOverlayPosition(this, params.x, params.y)
                     } else if (SystemClock.uptimeMillis() - downTime < LONG_PRESS_MS) {
-                        // 轻点：开始 / 停止记录，并同步通知文案
-                        FpsRecorder.toggleRecording()
-                        updateNotification()
+                        // 轻点：循环切换形态（胶囊 → 负载面板 → 迷你）。
+                        // 原来的「轻点切换记录」移交给通知按钮——同一个手势不能
+                        // 既当导航又当开关，否则用户想挪形态时总在误触记录。
+                        cycleForm()
                     }
                     dragging = false
                     true
@@ -383,9 +413,26 @@ class FpsOverlayService : Service() {
         }
     }
 
-    /** 窗上文字：按用户勾选的指标项拼接；记录中在数值前加一个红点，表示正在留档 */
+    /** 窗上文字：按当前形态构建。PILL/MINI 单行，LOAD 是 Metric 风格的多行负载面板 */
     private fun buildOverlayText(v: OverlayValues): CharSequence {
-        val body = v.metrics.joinToString("   ") { compact(it, v.snapshot, v.fps) }
+        val s = v.snapshot
+        val body = when (form) {
+            // 负载监视器：Metric 的核心形态，每指标一行「标签 值」，
+            // 用等宽数字对齐；读不到的一律 "--" 占位，不用 0 冒充
+            Preferences.OverlayForm.LOAD -> listOf(
+                "CPU  ${if (s.cpuLoad < 0f) "--" else "%.0f%%".format(s.cpuLoad)}  ${if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"}",
+                "GPU  ${if (s.gpuLoad >= 0) "${s.gpuLoad}%" else "--"}  ${if (s.gpuMhz > 0) fmtFreq(s.gpuMhz) else "--"}",
+                "RAM  ${"%.0f%%".format(s.memUsedPercent)}",
+                "FPS  ${"%.0f".format(v.fps)}",
+                "PWR  ${if (s.powerMw > 0f) "%.2fW".format(s.powerMw / 1000f) else "--"}",
+                "BAT  ${s.batteryTempC?.let { "%.1f℃".format(it) } ?: "--"}",
+            ).joinToString("\n")
+            // 迷你监视器：极简单行两项，几乎不遮挡内容
+            Preferences.OverlayForm.MINI ->
+                if (s.cpuLoad < 0f) "--·${"%.0f".format(v.fps)}f"
+                else "${"%.0f".format(s.cpuLoad)}%·${"%.0f".format(v.fps)}f"
+            else -> v.metrics.joinToString("   ") { compact(it, s, v.fps) }
+        }
         if (!v.recording) return body
         val sb = SpannableStringBuilder()
         sb.append("● ")
@@ -423,7 +470,7 @@ class FpsOverlayService : Service() {
         withUnit: Boolean = false,
     ): String = when (m) {
         NotifMetric.Fps -> if (withUnit) "%.0fFPS".format(fps) else "%.0f".format(fps)
-        NotifMetric.CpuLoad -> "%.0f%%".format(s.cpuLoad)
+        NotifMetric.CpuLoad -> if (s.cpuLoad < 0f) "--" else "%.0f%%".format(s.cpuLoad)
         NotifMetric.CpuFreq -> if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"
         NotifMetric.GpuLoad -> if (s.gpuLoad >= 0) "${s.gpuLoad}%" else "--"
         NotifMetric.GpuFreq -> if (s.gpuMhz > 0) fmtFreq(s.gpuMhz) else "--"
@@ -588,9 +635,13 @@ class FpsOverlayService : Service() {
         NotifMetric.Fps -> Notification.Metric(
             Notification.Metric.FixedFloat(fps, "FPS"), m.notifLabel,
         )
-        NotifMetric.CpuLoad -> Notification.Metric(
-            Notification.Metric.FixedInt(s.cpuLoad.roundToInt(), "%"), m.notifLabel,
-        )
+        NotifMetric.CpuLoad -> if (s.cpuLoad < 0f) {
+            Notification.Metric(Notification.Metric.FixedText("--"), m.notifLabel)
+        } else {
+            Notification.Metric(
+                Notification.Metric.FixedInt(s.cpuLoad.roundToInt(), "%"), m.notifLabel,
+            )
+        }
         NotifMetric.CpuFreq -> Notification.Metric(
             Notification.Metric.FixedText(if (s.cpuFreqMhz > 0) fmtFreq(s.cpuFreqMhz) else "--"),
             m.notifLabel,

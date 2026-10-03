@@ -70,6 +70,18 @@
         </receiver>
 
         <!--
+            Shizuku：以 shell 身份执行命令的替代提权通道。
+            该 provider 由 Shizuku App 通过 Binder 授权，自身不做任何网络/存储访问。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!--
             说明：不声明 Xposed/LSPosed 模块元数据。
             本应用全部功能在自身进程内通过 Root 完成，没有任何需要注入其他进程的场景；
             若声明 xposedmodule=true 而不提供 hook 实现，LSPosed 会把它列为可激活模块，

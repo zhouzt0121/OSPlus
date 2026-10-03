@@ -46,7 +46,6 @@ import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
-import com.osplus.tools.ui.components.LiquidGlassButton
 import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.LiquidSlider
 import com.osplus.tools.ui.components.bottomBarContentPadding
@@ -223,7 +222,12 @@ fun FpsScreen(vm: DeviceViewModel) {
                         InfoRow("已记录", "${records.size} 条", emphasis = true)
                         InfoRow("记录时长", elapsedText, emphasis = true)
                         InfoRow("当前帧率", "%.1f FPS".format(liveSample.fps))
-                        InfoRow("当前 CPU", "%.0f%%".format(latest?.cpuLoad ?: 0f))
+                        InfoRow(
+                            "当前 CPU",
+                            (latest?.cpuLoad ?: -1f).let {
+                                if (it < 0f) "不可读" else "%.0f%%".format(it)
+                            },
+                        )
                         InfoRow("当前内存", "%.0f%%".format(latest?.memUsedPercent ?: 0f))
                         Spacer(Modifier.height(6.dp))
                         Text(
@@ -292,7 +296,7 @@ fun FpsScreen(vm: DeviceViewModel) {
                         Spacer(Modifier.height(6.dp))
                         MetricChartCard(
                             title = "CPU 总占用",
-                            values = downsample(windowed.map { it.cpuLoad }, bars),
+                            values = downsample(windowed.map { it.cpuLoad.coerceAtLeast(0f) }, bars),
                             maxValue = 100f,
                             color = ChartColors.cpu,
                             unit = "%",

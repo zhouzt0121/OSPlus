@@ -40,6 +40,7 @@ import com.osplus.tools.ui.components.OsTopBarPillAction
 import com.osplus.tools.ui.components.PageBackground
 import com.osplus.tools.ui.screen.CpuDetailScreen
 import com.osplus.tools.ui.screen.FpsScreen
+import com.osplus.tools.ui.screen.LiquidLabScreen
 import com.osplus.tools.ui.screen.GpuDetailScreen
 import com.osplus.tools.ui.screen.MemDetailScreen
 import com.osplus.tools.ui.screen.OverviewDetail
@@ -66,6 +67,7 @@ private enum class RootTab { Overview, Perf, Fps, Power }
 
 /** 一级页之外的二级路由。设置与详情页共用同一层，保证返回手势行为一致。 */
 private const val RouteSettings = "Settings"
+private const val RouteLiquidLab = "LiquidLab"
 
 private fun tabKey(tab: RootTab) = "tab-${tab.name}"
 
@@ -172,7 +174,8 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                     label = "清内存",
                                     contentDescription = "清理物理内存",
                                     enabled = rootAvailable,
-                                    onClick = { viewModel.cleanMemCaches() },
+                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                                    onClick = { if (rootAvailable) viewModel.cleanMemCaches() },
                                     backdrop = topBarBackdrop,
                                 )
                                 OsTopBarPillAction(
@@ -180,7 +183,8 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                     label = "清交换",
                                     contentDescription = "清理交换分区",
                                     enabled = rootAvailable,
-                                    onClick = { viewModel.cleanSwap() },
+                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                                    onClick = { if (rootAvailable) viewModel.cleanSwap() },
                                     backdrop = topBarBackdrop,
                                 )
                                 OsTopBarAction(
@@ -214,14 +218,16 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                     icon = Icons.Rounded.ContentCopy,
                                     contentDescription = "复制本次耗电记录",
                                     enabled = powerHasRecord,
-                                    onClick = { viewModel.copyPowerRecord() },
+                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                                    onClick = { if (powerHasRecord) viewModel.copyPowerRecord() },
                                     backdrop = topBarBackdrop,
                                 )
                                 OsTopBarAction(
                                     icon = Icons.Rounded.DeleteOutline,
                                     contentDescription = "删除本次耗电记录",
                                     enabled = powerHasRecord,
-                                    onClick = { viewModel.clearPowerRecord() },
+                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                                    onClick = { if (powerHasRecord) viewModel.clearPowerRecord() },
                                     backdrop = topBarBackdrop,
                                 )
                             }
@@ -241,7 +247,12 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                             val keyTab = RootTab.entries.firstOrNull { tabKey(it) == key }
                             Box(Modifier.fillMaxSize()) {
                                 when {
-                                    key == RouteSettings -> SettingsScreen(viewModel)
+                                    key == RouteSettings -> SettingsScreen(
+                                        viewModel,
+                                        onOpenLiquidLab = { route = RouteLiquidLab },
+                                    )
+
+                                    key == RouteLiquidLab -> LiquidLabScreen()
 
                                     keyDetail != null -> when (keyDetail) {
                                         OverviewDetail.Memory -> MemDetailScreen(viewModel)

@@ -40,8 +40,14 @@ import com.osplus.tools.core.SchedResult
 import com.osplus.tools.core.UperfState
 import com.osplus.tools.core.PowerStatsDataSource
 import com.osplus.tools.core.Preferences
+import com.osplus.tools.core.PrivilegeCapabilities
+import com.osplus.tools.core.PrivilegeManager
+import com.osplus.tools.core.PrivilegeMode
 import com.osplus.tools.core.ProcessDataSource
 import com.osplus.tools.core.Shell
+import com.osplus.tools.core.adb.AdbPairClient
+import com.osplus.tools.core.adb.AdbScriptDeployer
+import com.osplus.tools.core.adb.Spake2
 import com.osplus.tools.core.SystemProbe
 import com.osplus.tools.service.FpsOverlayService
 import com.osplus.tools.ui.theme.AppThemeMode
@@ -121,6 +127,23 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     private val _rootAvailable = MutableStateFlow(false)
     val rootAvailable: StateFlow<Boolean> = _rootAvailable.asStateFlow()
 
+    /** 当前生效的提权模式（Root / Shizuku / ADB），null 表示都没就绪 */
+    val privilegeMode: StateFlow<PrivilegeMode?> = PrivilegeManager.mode
+
+    /**
+     * 用户在设置页点选的模式（见 [PrivilegeManager.selection]）。
+     *
+     * 界面用它驱动「提权方式」分段条的选中态与详情展示——**点了就跟着变**，
+     * 不受「该模式当前能不能用」影响；实际生效的通道仍是 [privilegeMode]。
+     */
+    val privilegeSelection: StateFlow<PrivilegeMode?> = PrivilegeManager.selection
+
+    /** 当前模式下各项能力的可用性，界面据此决定控件是否可点 */
+    val capabilities: StateFlow<PrivilegeCapabilities> = PrivilegeManager.capabilities
+
+    /** 各模式在本机的可探测状态，设置页用来展示「能用哪些模式」 */
+    val privilegeProbe: StateFlow<PrivilegeManager.ModeProbe> = PrivilegeManager.probe
+
     private val _usageAccess = MutableStateFlow(false)
     val usageAccess: StateFlow<Boolean> = _usageAccess.asStateFlow()
 
@@ -151,6 +174,17 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     fun setMonet(enabled: Boolean) {
         _monet.value = enabled
         Preferences.setMonetEnabled(context, enabled)
+    }
+
+    /** 功率校准（复刻 Metric）：电流倍率与串联双电芯，立即影响下一次采样 */
+    fun setPowerCurrentFactor(factor: Float) {
+        Preferences.setPowerCurrentFactor(context, factor.coerceIn(0.1f, 10f))
+    }
+
+    fun setPowerSerialDualCell(enabled: Boolean) {
+        Preferences.setPowerSerialDualCell(context, enabled)
+        // 校准一变，上一次的功率值就是旧口径了，清掉避免曲线突变前残留半秒
+        lastPowerMw = 0f
     }
 
     /**
@@ -192,8 +226,17 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         _zramResizeEnabled.value = Preferences.isZramResizeEnabled(context)
         FpsOverlayState.setAlpha(Preferences.overlayAlpha(context))
         viewModelScope.launch {
-            _rootAvailable.value = Shell.isRootAvailable(force = true)
-            // 首屏就要在「性能调度」入口显示模块状态摘要，只多一次 root 调用
+            // 默认不提权：只有此前配置过模式才恢复。
+            // 首次安装 / 开机自启时若强行探测，Root 会触发授权弹框而无人可点，
+            // 进程卡死在启动阶段。详见 PrivilegeManager.restoreIfConfigured。
+            PrivilegeManager.restoreIfConfigured()
+            // rootAvailable 只用于设置页展示「设备是否具备 root」。
+            // 未授权时不主动执行 su —— 那会弹授权框，开机自启场景下无人可点，
+            // 进程就卡在启动阶段。等用户去设置页点 Root 时再探。
+            if (PrivilegeManager.mode.value == PrivilegeMode.ROOT) {
+                _rootAvailable.value = Shell.isRootAvailable(force = true)
+            }
+            // 首屏就要在「性能调度」入口显示模块状态摘要，只多一次提权调用
             refreshPerfSched()
         }
         viewModelScope.launch {
@@ -246,6 +289,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     private val chargeHistory = ArrayDeque<Pair<Long, Long>>()
     private var lastPowerMw: Float = 0f
 
+    /** 功率校准系数（复刻 Metric）：电流倍率 × 串联双电芯修正，设置页可调 */
+    private fun powerCalibrationFactor(): Float =
+        Preferences.powerCurrentFactor(context) *
+            (if (Preferences.powerSerialDualCell(context)) 2f else 1f)
+
     /**
      * 由 charge_counter 增量推算真实电流并换算功耗。
      *
@@ -253,6 +301,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
      * 累计电量（µAh）对时间求导可得到与机型无关的真实电流。
      */
     private fun estimatePowerMw(tick: com.osplus.tools.core.ProbeTick, nowMs: Long): Float {
+        val calib = powerCalibrationFactor()
         // 1) 优先用累计电量做 5 秒滑动窗口求导：charge_counter 更新粒度较粗，
         //    单次 1 秒差分经常为 0，拉长窗口才能得到稳定的真实电流。
         if (tick.chargeCounterUah >= 0L) {
@@ -268,7 +317,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
                 val dUah = (tick.chargeCounterUah - first.second).toFloat()
                 val currentUa = kotlin.math.abs(dUah * 3600f / spanSec)
                 if (currentUa > 1_000f && tick.voltageMv > 0f) {
-                    lastPowerMw = tick.voltageMv * currentUa / 1_000_000f
+                    lastPowerMw = tick.voltageMv * currentUa / 1_000_000f * calib
                     return lastPowerMw
                 }
             }
@@ -279,7 +328,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         // 2) 回落：直接使用瞬时电流节点，单位按数量级推断
         val ua = normalizeCurrentUa(tick.currentRaw)
         if (tick.voltageMv > 0f && ua != 0L) {
-            lastPowerMw = tick.voltageMv * ua / 1_000_000f
+            lastPowerMw = tick.voltageMv * ua / 1_000_000f * calib
             return lastPowerMw
         }
         return 0f
@@ -311,8 +360,8 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         if (plugged.isBlank() || plugged == "未连接") return 0f
         val ua = normalizeCurrentUa(tick.currentRaw)
         if (ua <= 0L || tick.voltageMv <= 0f) return 0f
-        // mV × µA = 1e-9 W
-        return tick.voltageMv * ua / 1_000_000_000f
+        // mV × µA = 1e-9 W；与 estimatePowerMw 共用同一套校准口径
+        return tick.voltageMv * ua / 1_000_000_000f * powerCalibrationFactor()
     }
 
     /**
@@ -323,8 +372,9 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun sampleOnce() = withContext(Dispatchers.IO) {
         val tick = SystemProbe.sample()
-        val cores = _coreIndexes.value.ifEmpty { CpuDataSource.coreIndexes() }
-        if (_coreIndexes.value.isEmpty()) _coreIndexes.value = cores
+        val cachedCores = _coreIndexes.value
+        val cores = if (cachedCores.isNotEmpty()) cachedCores else CpuDataSource.coreIndexes()
+        if (cachedCores.isEmpty()) _coreIndexes.value = cores
 
         val prev = lastTick
         val now = System.currentTimeMillis()
@@ -335,7 +385,10 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             val dt = tick.cpuTotal - prev.cpuTotal
             val di = tick.cpuIdle - prev.cpuIdle
             ((dt - di) * 100f / dt).coerceIn(0f, 100f)
-        } else 0f
+        } else {
+            // 读不到 /proc/stat（无提权通道）时记不可读，不填 0
+            LiveMetrics.UNREADABLE
+        }
 
         val coreLoads = List(cores.size) { idx ->
             if (prev == null) return@List 0f
@@ -762,8 +815,213 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshRootState() {
         viewModelScope.launch {
             _rootAvailable.value = Shell.isRootAvailable(force = true)
+            PrivilegeManager.redetect()
         }
     }
+
+    // ---------------- 提权模式 ----------------
+
+    /**
+     * 切换到指定提权模式。
+     *
+     * 切换后要重跑一次完整快照：不同模式下能读到的节点不同
+     * （例如 Shizuku 读不到 /data/adb，性能调度摘要会变成「不可用」），
+     * 不刷新的话界面会停留在上一个模式的读数上。
+     */
+    fun selectPrivilegeMode(mode: PrivilegeMode) {
+        viewModelScope.launch {
+            val ok = PrivilegeManager.select(mode)
+            if (ok) {
+                _cpu.value = CpuDataSource.read()
+                refreshPerfSched()
+            }
+            _privilegeMessage.value = if (ok) {
+                "已切换到「${mode.label}」"
+            } else {
+                when (mode) {
+                    PrivilegeMode.ROOT -> "Root 不可用：未检测到已授权的 su"
+                    PrivilegeMode.SHIZUKU ->
+                        "Shizuku 不可用：请确认已安装并启动 Shizuku，且已授权本应用"
+                    PrivilegeMode.ADB ->
+                        "ADB 不可用：请开启「无线调试」并完成配对；" +
+                            "或用数据线连电脑，执行设置页给出的 adb 命令拉起守护进程" +
+                            "（后者在设备重启后需重新执行）"
+                }
+            }
+        }
+    }
+
+    /** 对 Shizuku 请求 shell 权限 */
+    fun requestShizukuPermission() {
+        viewModelScope.launch {
+            val backend = PrivilegeManager.shizuku()
+            if (backend == null || !backend.isSupported()) {
+                _privilegeMessage.value = "Shizuku 未运行：请先安装并启动 Shizuku"
+                return@launch
+            }
+            val granted = backend.requestPermission()
+            _privilegeMessage.value =
+                if (granted) "Shizuku 已授权" else "Shizuku 授权被拒绝"
+            PrivilegeManager.refresh(preferred = PrivilegeMode.SHIZUKU)
+        }
+    }
+
+    /**
+     * ADB 无线调试配对。
+     *
+     * 配对端口是随机的、且只在「使用配对码配对设备」页面打开期间才广播，
+     * 因此端口留空时现查一次——用户只需要填那 6 位配对码。
+     */
+    fun pairAdb(port: Int?, code: String, host: String? = null) {
+        viewModelScope.launch {
+            if (code.trim().length != 6) {
+                _privilegeMessage.value = "配对码应为 6 位数字"
+                return@launch
+            }
+            _privilegeMessage.value = "正在查找配对端口…"
+            val resolvedPort = port ?: PrivilegeManager.discoverPairingPort()
+            if (resolvedPort == null || resolvedPort <= 0) {
+                _privilegeMessage.value =
+                    "未找到配对端口：请先在开发者选项里打开「使用配对码配对设备」页面，再点开始配对"
+                return@launch
+            }
+            _privilegeMessage.value = "正在配对（端口 $resolvedPort）…"
+            val result = PrivilegeManager.pairAdb(host, resolvedPort, code)
+            _privilegeMessage.value = when (result) {
+                is AdbPairClient.Result.Success -> "配对成功，已切换到 ADB 模式"
+                is AdbPairClient.Result.WrongCode -> "配对失败：配对码错误或已过期"
+                is AdbPairClient.Result.TlsError -> result.detail
+                is AdbPairClient.Result.Failed -> "配对失败：${result.detail}"
+            }
+            if (result is AdbPairClient.Result.Success) {
+                _cpu.value = CpuDataSource.read()
+                refreshPerfSched()
+            }
+        }
+    }
+
+    /**
+     * 手动连接无线调试**连接端口**。
+     *
+     * 配对与连接是两个不同端口：配对给了我们身份，连接才是拿 shell 的通路。
+     * 正常情况下 mDNS 会自动发现连接端口，这里只是发现失败时的兜底。
+     */
+    fun connectAdb(port: Int, host: String = "127.0.0.1") {
+        viewModelScope.launch {
+            _privilegeMessage.value = "正在连接…"
+            // 端口留空（传 0）时先让 mDNS 查一次，查不到再报错。
+            // 无线调试的连接端口同样是随机的，让用户去翻没有道理。
+            val resolved = if (port > 0) port else PrivilegeManager.discoverConnectPort() ?: 0
+            if (resolved <= 0) {
+                _privilegeMessage.value =
+                    "未找到连接端口：请确认「无线调试」开关处于开启状态，或手动填入端口号"
+                return@launch
+            }
+            val ok = PrivilegeManager.adbConnect(host, resolved)
+            _privilegeMessage.value =
+                if (ok) "已连接无线调试（端口 $resolved）"
+                else "连接失败：请检查端口，并确认「无线调试」开关处于开启状态"
+            if (ok) {
+                PrivilegeManager.refresh(preferred = PrivilegeMode.ADB)
+                _cpu.value = CpuDataSource.read()
+                refreshPerfSched()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 脚本激活通道（照搬 Scene 的 up.sh 方式）
+    //
+    // 与上面的配对流程互补：配对是应用内自动、依赖无线调试；
+    // 脚本是用户从电脑跑一条 adb 命令、只要有 USB 就行，不需要配对。
+    // ------------------------------------------------------------------
+
+    /** 激活脚本的路径与调用命令 */
+    data class ScriptInfo(val path: String, val command: String)
+
+    private val _scriptInfo = MutableStateFlow<ScriptInfo?>(null)
+
+    /** 脚本落点与可复制的 adb 命令；未部署时为 null */
+    val scriptInfo: StateFlow<ScriptInfo?> = _scriptInfo.asStateFlow()
+
+    private val _scriptCapabilities = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /** 脚本实测出的 shell 能力表（`up.sh` 第 3 步的探测结果） */
+    val scriptCapabilities: StateFlow<Map<String, String>> = _scriptCapabilities.asStateFlow()
+
+    /** 把 `up.sh` 从 assets 部署到外部私有目录，供 adb 读取执行 */
+    fun deployActivationScript() {
+        when (val r = PrivilegeManager.deployActivationScript()) {
+            is AdbScriptDeployer.DeployResult.Ok -> {
+                _scriptInfo.value = ScriptInfo(
+                    path = r.path,
+                    command = PrivilegeManager.activationCommand().orEmpty(),
+                )
+                _privilegeMessage.value = "脚本已部署，可用电脑执行下方命令"
+            }
+            is AdbScriptDeployer.DeployResult.Failed -> {
+                _privilegeMessage.value = "部署失败：${r.reason}"
+            }
+        }
+    }
+
+    /**
+     * 通过**已建立的 ADB 通道**执行激活脚本。
+     *
+     * 这是相对 Scene 的增强 —— Scene 只能由用户从电脑手动执行。
+     */
+    fun runActivationScript() {
+        viewModelScope.launch {
+            _privilegeMessage.value = "正在执行激活脚本…"
+            val res = PrivilegeManager.runActivationScript()
+            _privilegeMessage.value = if (res.success) {
+                // 脚本输出较长，只保留结尾部分，前面是逐项进度
+                "激活完成\n" + res.stdout.trim().takeLast(320)
+            } else {
+                "激活失败：" + res.stderr.ifBlank { res.stdout }.trim().take(200)
+            }
+            if (res.success) {
+                _scriptCapabilities.value = PrivilegeManager.readScriptCapabilities()
+                PrivilegeManager.refresh()
+            }
+        }
+    }
+
+    /** 提权操作的回执，界面读取后应自行清空（[clearPrivilegeMessage]） */
+    private val _privilegeMessage = MutableStateFlow<String?>(null)
+    val privilegeMessage: StateFlow<String?> = _privilegeMessage.asStateFlow()
+
+    fun clearPrivilegeMessage() {
+        _privilegeMessage.value = null
+    }
+
+    /**
+     * 运行 SPAKE2 自检。
+     *
+     * 之所以做成界面上可点的操作而不是单元测试：这段密码学代码是自行移植的，
+     * 而 R8 会裁剪无人调用的方法——被裁剪掉的自检等于不存在。
+     * 挂在这里既保证它在 Release 包里存活，也让用户/开发者随时能在真机上验证。
+     *
+     * @return 面向用户的结果描述
+     */
+    fun runSpake2SelfTest(): String = runCatching {
+        val r = Spake2.selfTest()
+        buildString {
+            append(if (r.allPassed) "全部通过" else "存在问题")
+            append("（标量乘向量 ")
+            append(if (r.scalarMultVectorOk) "✓" else "✗")
+            append("，密钥一致 ")
+            append(if (r.keyAgreementOk) "✓" else "✗")
+            append("，错误口令分离 ")
+            append(if (r.wrongPasswordMismatchOk) "✓" else "✗")
+            append("）")
+            if (!r.scalarMultVectorOk) {
+                // 向量不符说明域运算被改坏了，带上实际值便于比对
+                append("\n2B 实际=")
+                append(r.twoBHex)
+            }
+        }
+    }.getOrElse { "自检执行失败：${it.message ?: it.javaClass.simpleName}" }
 
     // ---------------- 耗电录制 ----------------
 

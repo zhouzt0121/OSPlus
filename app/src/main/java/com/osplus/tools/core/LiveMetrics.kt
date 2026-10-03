@@ -12,9 +12,19 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 object LiveMetrics {
 
+    /**
+     * 「不可读」哨兵值。
+     *
+     * 用于区分「读不到」与「真的是 0」——CPU 占用读不到时是 [UNREADABLE] 而不是 0，
+     * 界面据此显示「不可读」。若图省事填 0，用户会以为 CPU 闲着，
+     * 而真实原因是没有提权通道（`/proc/stat` 对普通应用不可读）。
+     */
+    const val UNREADABLE: Float = -1f
+
     /** 一次完整快照；频率单位 MHz，内存单位 KB，功耗单位 mW */
     data class Snapshot(
-        val cpuLoad: Float = 0f,
+        /** CPU 占用百分比；负数表示不可读（见 [UNREADABLE]） */
+        val cpuLoad: Float = UNREADABLE,
         val cpuFreqMhz: Int = 0,
         val gpuLoad: Int = -1,
         val gpuMhz: Int = -1,
@@ -36,7 +46,8 @@ object LiveMetrics {
             }
     }
 
-    private val _cpuLoad = MutableStateFlow(0f)
+    // 初值即「不可读」：首次采样前没有任何数据，显示 0% 是假象
+    private val _cpuLoad = MutableStateFlow(UNREADABLE)
     val cpuLoad: StateFlow<Float> = _cpuLoad.asStateFlow()
 
     /** GPU 负载百分比，-1 表示不可读 */

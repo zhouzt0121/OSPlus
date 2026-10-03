@@ -209,7 +209,7 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                 Spacer(Modifier.height(10.dp))
                 MetricChartCard(
                     title = "CPU 总占用",
-                    values = downsample(samples.map { it.cpuLoad }, slots),
+                    values = downsample(samples.map { it.cpuLoad.coerceAtLeast(0f) }, slots),
                     maxValue = 100f,
                     color = ChartColors.cpu,
                     unit = "%",

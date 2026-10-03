@@ -81,6 +81,11 @@ fun PerfSchedScreen(vm: DeviceViewModel) {
     val notice by vm.schedNotice.collectAsStateWithLifecycle()
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
     val refreshing by vm.schedRefreshing.collectAsStateWithLifecycle()
+    // 性能调度读写的是 /data/adb 下的 Magisk 模块文件，**只有 Root 能读**
+    // （Shizuku / ADB 都是 shell 域）。因此门控用能力表而不是 rootAvailable：
+    // 前者能区分「没提权」和「提权了但身份不够」这两种完全不同的原因。
+    val caps by vm.capabilities.collectAsStateWithLifecycle()
+    val schedEnabled = caps.canControlPerfSched
 
     LaunchedEffect(Unit) { vm.refreshPerfSched() }
 
@@ -99,17 +104,18 @@ fun PerfSchedScreen(vm: DeviceViewModel) {
         contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (!rootAvailable) {
-            item { NoticeBanner("未获取到 Root 权限，无法读写模块配置。") }
+        if (!schedEnabled) {
+            item { NoticeBanner(caps.reasonForPerfSched()) }
         }
         notice?.let { item { NoticeBanner(it) } }
 
         item { UperfStatusCard(uperf, refreshing) }
-        item { UperfModeCard(uperf, onPick = vm::setUperfMode) }
+        item { UperfModeCard(uperf, enabled = schedEnabled, onPick = vm::setUperfMode) }
         item {
             PerAppCard(
                 rules = uperf.rules,
                 apps = apps,
+                enabled = schedEnabled,
                 onSave = vm::setUperfPerAppRules,
             )
         }
@@ -117,6 +123,7 @@ fun PerfSchedScreen(vm: DeviceViewModel) {
             AsoulCard(
                 state = asoul,
                 apps = apps,
+                enabled = schedEnabled,
                 onSave = vm::setAsoulConfig,
             )
         }
@@ -127,6 +134,7 @@ fun PerfSchedScreen(vm: DeviceViewModel) {
                 onRefresh = vm::refreshPerfSched,
                 uperfInstalled = uperf.installed,
                 asoulInstalled = asoul.installed,
+                enabled = schedEnabled,
             )
         }
     }
@@ -159,7 +167,11 @@ private fun UperfStatusCard(uperf: UperfState, refreshing: Boolean) {
 }
 
 @Composable
-private fun UperfModeCard(uperf: UperfState, onPick: (String) -> Unit) {
+private fun UperfModeCard(
+    uperf: UperfState,
+    enabled: Boolean,
+    onPick: (String) -> Unit,
+) {
     val c = osColors()
     SectionCard {
         CardSectionLabel("电源档位")
@@ -168,6 +180,7 @@ private fun UperfModeCard(uperf: UperfState, onPick: (String) -> Unit) {
             options = PerfSchedDataSource.UPERF_MODES,
             selected = uperf.mode,
             onPick = onPick,
+            enabled = enabled,
         )
         Spacer(Modifier.height(10.dp))
         Text(
@@ -185,6 +198,7 @@ private fun UperfModeCard(uperf: UperfState, onPick: (String) -> Unit) {
 private fun PerAppCard(
     rules: List<PerAppRule>,
     apps: List<AppEntry>,
+    enabled: Boolean,
     onSave: (List<PerAppRule>) -> Unit,
 ) {
     val c = osColors()
@@ -235,6 +249,7 @@ private fun PerAppCard(
                 onDelete = if (isSpecialRule(rule.target)) null else {
                     { onSave(rules.toMutableList().also { it.removeAt(index) }) }
                 },
+                enabled = enabled,
             )
         }
 
@@ -242,6 +257,7 @@ private fun PerAppCard(
         ActionRow(
             text = if (picking) "收起应用列表" else "＋ 添加应用",
             accent = true,
+            enabled = enabled,
             onClick = { picking = !picking },
         )
 
@@ -273,6 +289,7 @@ private fun PerAppCard(
 private fun AsoulCard(
     state: AsoulState,
     apps: List<AppEntry>,
+    enabled: Boolean,
     onSave: (String, String, List<AsoulGame>) -> Unit,
 ) {
     val c = osColors()
@@ -307,6 +324,7 @@ private fun AsoulCard(
             options = PerfSchedDataSource.ASOUL_MODES,
             selected = state.mode,
             onPick = { onSave(it, state.rt, state.games) },
+            enabled = enabled,
         )
 
         Spacer(Modifier.height(12.dp))
@@ -317,6 +335,7 @@ private fun AsoulCard(
             selected = state.rt,
             onPick = { onSave(state.mode, it, state.games) },
             columns = 2,
+            enabled = enabled,
         )
 
         Spacer(Modifier.height(12.dp))
@@ -364,6 +383,7 @@ private fun AsoulCard(
                         state.games.toMutableList().also { it.removeAt(index) },
                     )
                 },
+                enabled = enabled,
             )
         }
 
@@ -371,6 +391,7 @@ private fun AsoulCard(
         ActionRow(
             text = if (picking) "收起游戏列表" else "＋ 添加游戏",
             accent = true,
+            enabled = enabled,
             onClick = { picking = !picking },
         )
 
@@ -405,6 +426,7 @@ private fun ServiceCard(
     onRefresh: () -> Unit,
     uperfInstalled: Boolean,
     asoulInstalled: Boolean,
+    enabled: Boolean,
 ) {
     val c = osColors()
     SectionCard {
@@ -412,17 +434,19 @@ private fun ServiceCard(
         Spacer(Modifier.height(8.dp))
         ActionRow(
             text = "重启 uperf 进程",
-            enabled = uperfInstalled,
+            enabled = uperfInstalled && enabled,
             onClick = onRestartUperf,
         )
         Hairline(verticalPadding = 0.dp)
         ActionRow(
             text = "重启 AsoulOpt",
-            enabled = asoulInstalled,
+            enabled = asoulInstalled && enabled,
             onClick = onRestartAsoul,
         )
         Hairline(verticalPadding = 0.dp)
         ActionRow(
+            // 「重新读取状态」始终可点：它只是重读，不写任何文件，
+            // 即便当前模式读不到内容，重读也是排查问题的第一步
             text = "重新读取状态",
             onClick = onRefresh,
         )
@@ -445,6 +469,7 @@ private fun ChipGrid(
     selected: String,
     onPick: (String) -> Unit,
     columns: Int = 3,
+    enabled: Boolean = true,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         options.chunked(columns).forEach { row ->
@@ -453,7 +478,9 @@ private fun ChipGrid(
                     ChoiceChip(
                         text = label,
                         selected = id == selected,
-                        onClick = { onPick(id) },
+                        enabled = enabled,
+                        // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                        onClick = { if (enabled) onPick(id) },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -482,6 +509,7 @@ private fun RuleRow(
     onToggle: () -> Unit,
     onPickMode: (String) -> Unit,
     onDelete: (() -> Unit)?,
+    enabled: Boolean = true,
 ) {
     val c = osColors()
     Column(Modifier.fillMaxWidth()) {
@@ -489,7 +517,7 @@ private fun RuleRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
-                .pressable(onToggle)
+                .then(if (enabled) Modifier.pressable(onToggle) else Modifier)
                 .padding(vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -517,12 +545,14 @@ private fun RuleRow(
                 maxLines = 1,
             )
             Spacer(Modifier.width(6.dp))
-            Text(
-                text = if (expanded) "⌃" else "⌄",
-                style = OsText.caption,
-                color = c.textTertiary,
-            )
-            if (onDelete != null) {
+            if (enabled) {
+                Text(
+                    text = if (expanded) "⌃" else "⌄",
+                    style = OsText.caption,
+                    color = c.textTertiary,
+                )
+            }
+            if (onDelete != null && enabled) {
                 Spacer(Modifier.width(10.dp))
                 Text(
                     text = "✕",
@@ -536,7 +566,7 @@ private fun RuleRow(
             }
         }
 
-        if (expanded) {
+        if (expanded && enabled) {
             // 展开的面板是一块**凹进去**的玻璃：elevation = 0，不加投影。
             // 它是从行内「沉」下去的一块，不是浮起来的一张卡——
             // 凹槽与凸片是同一块玻璃的两种受力状态，这条规则和分段控件保持一致。

@@ -1,6 +1,6 @@
 # OSPlus · Android 性能监视与调优工具
 
-包名 `com.osplus.tools` ｜ 版本 **2.1.0**（versionCode 15）｜ minSdk 33 (Android 13) ｜ targetSdk 36 ｜ compileSdk 37
+包名 `com.osplus.tools` ｜ 版本 **2.5.0**（versionCode 16）｜ minSdk 33 (Android 13) ｜ targetSdk 36 ｜ compileSdk 37
 
 完全自研的**本地**性能监视与调优工具。数据全部来自 `/proc`、`/sys` 与系统 API，
 **不做任何云端上报**；涉及内核写入的功能全部经 Root 执行。
@@ -250,6 +250,41 @@ Compose 的 `onDispose` 在**切换标签页**时同样会触发，早期把「�
 ViewModel 随 Activity 销毁而清理——因此 `FpsRecorder` / `PowerRecorder` 都做成单例，
 页面只读不写，两边读写同一个 `StateFlow`。
 
+### 12. 液态玻璃：原版组件的换装与适配
+
+全部玻璃控件都是 Kyant0 **AndroidLiquidGlass** 的移植件（`ui/liquid/`，源码逻辑保持原样）；
+`ui/components/LiquidGlass.kt` 只做**适配层**，不参与渲染。
+
+**为什么必须有适配层**：原版签名与本工程的三处约束不一致，而约定是**不改上游文件**。
+
+| 差异 | 适配层的处理 |
+|---|---|
+| 卡片内控件拿不到根 `backdrop` | 统一传 `emptyBackdrop()`，并补一层官方容器色——空 backdrop 没有可折射的内容，不补色按钮会退化成一行普通文字，完全看不出可点 |
+| 原版没有 `enabled`，且 `isInteractive = false` **不拦截点击** | 禁用视觉用 `modifier.alpha()`；「无 Root 不执行」这类守卫必须写在 `onClick` 里，不能指望 `isInteractive` 拦下来 |
+| 原版把 `selectedTabIndex` / `value()` 当 `remember` 的 key | 用 `rememberUpdatedState` + `remember` 钉死 lambda 身份，否则每次重组都重建内部状态，表现是「拖动松手后不切换」 |
+
+**按钮没有适配层**：页面内按钮、顶栏圆形 / 胶囊按钮、`ChoiceChip` 一律由调用点**直接引用**
+原版 `LiquidButton`。原版把 `height(48.dp)` 与 `padding(horizontal = 16.dp)` 写死在组件内部，
+外部 modifier 覆盖不了（`.height()` 在链尾永远最后生效，`requiredSize()` 也只能压高度、
+内部内边距仍会把内容区挤没），顶栏图标按钮因此必然被撑成 51×48 的椭圆。解法是给原版加两个
+**带默认值**的参数（`height` / `horizontalPadding`），默认值即原版值，其余调用点行为不变；
+顶栏传 `size(36.dp) + height = 36 + horizontalPadding = 0`，正方形加零内边距即得正圆。
+
+**动作组的胶囊要自己跟**：原版胶囊位置**完全**由 `selectedTabIndex` 驱动，动作组恒传 -1
+时胶囊永久停在第一格——点「导出 CSV / 清空记录」会出现「动作执行了、胶囊却不动」。
+适配层补回旧实现的 `lastPressed` 语义：动作组跟随最近按下的项，选择组仍由外部状态决定。
+
+**「当前生效」与「用户点选」是两个状态**：`PrivilegeManager.mode` 是真正装上的通道
+（探测失败会回退到能用的那个），`selection` 是用户点选的那个（与 `Preferences` 持久化的一致）。
+界面用 `selection` 驱动分段条选中态——否则点一个当前不可用的模式时胶囊不跟过去，
+看起来像「点了没反应」。
+
+**着色参数怎么选**：原版 `surfaceColor` 是 `drawRect` 不透明覆盖（设了就永远有底色），
+`tint` 是 `BlendMode.Hue` 染色 + `0.75` alpha 覆盖。空 backdrop 上 Hue 染色无效
+（纯色背景没有色相可改），但 0.75 alpha 覆盖一定有效——所以未选中态用 `tint` 保底可见、
+选中态用 `surfaceColor` 淡染。实测最终渲染色 ≈ tint 值本身，调浓度直接改 tint 颜色即可，
+不必去推合成公式。
+
 ---
 
 ## 四、工程结构
@@ -261,6 +296,7 @@ app/src/main/java/com/osplus/tools/
 ├── core/
 │   ├── Shell.kt                 # su/sh 执行封装（root 探测缓存、超时、并发读流）
 │   ├── SystemProbe.kt           # 一次 root 命令采集全部受限节点
+│   ├── SystemExtrasDataSource.kt # 负载 / 网络 / 磁盘 IO / IO 压力
 │   ├── CpuDataSource.kt         # CPU 信息、簇识别、增量占用率、频率与调速器控制
 │   ├── GpuDataSource.kt         # kgsl / devfreq 多路径探测与频率控制
 │   ├── MemDataSource.kt         # 内存、SWAP、ZRAM、swappiness
@@ -273,13 +309,22 @@ app/src/main/java/com/osplus/tools/
 │   ├── Preferences.kt           # SharedPreferences
 │   ├── FpsOverlayState.kt       # 悬浮窗开关与不透明度的跨层状态
 │   ├── FpsRecorder.kt           # Choreographer 逐帧统计 + 记录会话状态
-│   └── PowerRecorder.kt         # 耗电录制：逐秒累积、应用侧加权、功耗与续航计算
+│   ├── PowerRecorder.kt         # 耗电录制：逐秒累积、应用侧加权、功耗与续航计算
+│   ├── PrivilegeMode.kt         # 提权方式枚举（Root / Shizuku / ADB）+ 历史存储值兼容
+│   ├── PrivilegeManager.kt      # 通道探测与选择：mode（当前生效）/ selection（用户点选）
+│   ├── PrivilegeBackend.kt      # 提权后端抽象与 Root 实现
+│   ├── ShizukuBackend.kt        # Shizuku 服务绑定与 shell 权限请求
+│   ├── PrivilegeLog.kt          # 提权链路日志
+│   └── adb/                     # 无线调试配对（SPAKE2）与 daemon 通道
 ├── model/Models.kt              # 数据模型
 ├── vm/DeviceViewModel.kt        # 1 秒采样循环 + 累积趋势缓冲 + 全部控制入口
 ├── ui/
 │   ├── OsPlusApp.kt             # 根布局：一级页路由 + 二级详情栈 + 液态玻璃底栏
 │   ├── theme/                   # OsTokens（设计令牌）、Theme
-│   ├── components/              # Surfaces / LiquidGlass / GlassShaders / Charts / Navigation / Common
+│   ├── liquid/                  # Kyant0 原版组件移植件：LiquidButton / LiquidBottomTabs /
+│   │                            #   LiquidBottomTab / LiquidToggle / LiquidSlider / LiquidUtils
+│   ├── components/              # Surfaces / LiquidGlass（底栏·开关·滑块的适配层）/
+│   │                            #   GlassShaders / Charts / Navigation / Common
 │   └── screen/                  # Overview / Perf / Fps / Power / Settings / 详情页 / 性能调度
 ├── service/FpsOverlayService.kt # 跨应用监视前台服务：通知 / 悬浮窗 / 保活锚点
 └── receiver/BootReceiver.kt
@@ -290,7 +335,7 @@ app/src/test/java/com/osplus/tools/
 └── GpuDataSourceTest.kt         # GPU 频率单位判定
 ```
 
-约 **13200 行 Kotlin**。
+约 **18400 行 Kotlin**。
 
 ---
 

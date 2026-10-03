@@ -35,9 +35,11 @@ import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
-import com.osplus.tools.ui.components.LiquidGlassButton
+import com.osplus.tools.ui.components.LiquidGlassColors
 import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.LiquidSlider
+import com.osplus.tools.ui.liquid.LiquidButton
+import com.kyant.backdrop.backdrops.emptyBackdrop
 import top.yukonga.miuix.kmp.basic.Text
 import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -48,7 +50,13 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
     val history by vm.history.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
     val coreIndexes by vm.coreIndexes.collectAsStateWithLifecycle()
-    val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
+    // 变频控件按**能力**门控，而不是按「设备有没有 su」：
+    // 调频节点的 SELinux 标签 sysfs_devices_system_cpu 只给 root 写权限，
+    // Shizuku / ADB 虽然通道可用、能读频率，但写入会被拒绝
+    // （实测 SM8750/Android17/uid2000 返回 Permission denied）。
+    // 若沿用 rootAvailable，在 ADB 模式下控件会亮起来然后必然失败。
+    val caps by vm.capabilities.collectAsStateWithLifecycle()
+    val freqEditable = caps.canWriteSysfs
     val latest = history.lastOrNull()
     // 趋势窗口随运行时间累积（1 秒 1 条），绘制前按固定槽位降采样
     val trendSlots = 60
@@ -61,6 +69,8 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
     var freqApplyTick by remember { mutableIntStateOf(0) }
     // 每个核心所属的调频策略组（同组共享频率参数）
     var policyGroups by remember { mutableStateOf<Map<Int, List<Int>>>(emptyMap()) }
+    // 所选核心的硬件频率区间（需 root 读节点，异步取）
+    var hwRange by remember { mutableStateOf(-1L to -1L) }
 
     LaunchedEffect(coreIndexes) {
         if (coreIndexes.isEmpty()) return@LaunchedEffect
@@ -71,6 +81,7 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
     // 若固定用核心 0 的频率表，切到大核时上限会被压低。
     LaunchedEffect(coreIndexes, selectedCore) {
         freqOptions = CpuDataSource.availableFrequencies(selectedCore)
+        hwRange = CpuDataSource.hardwareRange(selectedCore)
     }
 
     // 回读该簇当前真正生效的上下限（用于判断写入是否被内核接受）
@@ -90,7 +101,7 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     MetricChartCard(
                         title = "总占用",
-                        values = downsample(history.map { it.cpuLoad }, trendSlots),
+                        values = downsample(history.map { it.cpuLoad.coerceAtLeast(0f) }, trendSlots),
                         maxValue = 100f,
                         color = ChartColors.cpu,
                         unit = "%",
@@ -149,8 +160,8 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
                 Column(Modifier.padding(vertical = 5.dp)) {
                     CardSectionLabel("CPU 调速器（Governor）")
                     Spacer(Modifier.height(10.dp))
-                    if (!rootAvailable) {
-                        NoticeBanner("修改调速器需要 Root 权限")
+                    if (!freqEditable) {
+                        NoticeBanner(caps.reasonForFreqControl())
                         Spacer(Modifier.height(8.dp))
                     }
                     val governors = cpu.governors
@@ -170,10 +181,13 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
                                 ChoiceChip(
                                     text = gov,
                                     selected = gov == currentGov,
-                                    enabled = rootAvailable,
+                                    enabled = freqEditable,
+                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
                                     onClick = {
-                                        val core = coreIndexes.firstOrNull() ?: 0
-                                        vm.setCpuGovernor(core, gov)
+                                        if (freqEditable) {
+                                            val core = coreIndexes.firstOrNull() ?: 0
+                                            vm.setCpuGovernor(core, gov)
+                                        }
                                     },
                                 )
                             }
@@ -209,7 +223,7 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
                     val idx = coreIndexes.indexOf(selectedCore).coerceAtLeast(0)
                     val curKhz = latest?.coreFreqs?.getOrElse(idx) { -1L } ?: -1L
                     val curLoad = latest?.coreLoads?.getOrElse(idx) { 0f } ?: 0f
-                    val hw = remember(selectedCore) { CpuDataSource.hardwareRange(selectedCore) }
+                    val hw = hwRange
                     val group = policyGroups[selectedCore]
 
                     InfoRow("当前频率", "${mhz(curKhz)} MHz", emphasis = true)
@@ -299,23 +313,32 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
                             value = stepIndex.toFloat(),
                             onValueChange = { stepIndex = it.toInt().coerceIn(0, lastIndex) },
                             valueRange = 0f..lastIndex.toFloat(),
-                            enabled = rootAvailable,
+                            enabled = freqEditable,
                         )
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            LiquidGlassButton(
+                            // 原版 isInteractive=false 不拦截点击，「不可调频时不执行」的守卫写在 onClick 里
+                            LiquidButton(
                                 onClick = {
-                                    vm.lockCpuFrequency(selectedCore, target)
-                                    freqApplyTick++
+                                    if (freqEditable) {
+                                        vm.lockCpuFrequency(selectedCore, target)
+                                        freqApplyTick++
+                                    }
                                 },
-                                enabled = rootAvailable,
+                                backdrop = emptyBackdrop(),
+                                isInteractive = freqEditable,
+                                surfaceColor = LiquidGlassColors.container(),
                             ) { Text("锁定此挡位") }
-                            LiquidGlassButton(
+                            LiquidButton(
                                 onClick = {
-                                    vm.restoreCpuAuto(selectedCore)
-                                    freqApplyTick++
+                                    if (freqEditable) {
+                                        vm.restoreCpuAuto(selectedCore)
+                                        freqApplyTick++
+                                    }
                                 },
-                                enabled = rootAvailable,
+                                backdrop = emptyBackdrop(),
+                                isInteractive = freqEditable,
+                                surfaceColor = LiquidGlassColors.container(),
                             ) { Text("恢复自动") }
                         }
                         Spacer(Modifier.height(6.dp))
@@ -423,7 +446,8 @@ fun GpuDetailScreen(vm: DeviceViewModel) {
                                 text = gov,
                                 selected = gov == gpu.governor,
                                 enabled = rootAvailable,
-                                onClick = { vm.setGpuGovernor(gov) },
+                                // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                                onClick = { if (rootAvailable) vm.setGpuGovernor(gov) },
                             )
                         }
                     }

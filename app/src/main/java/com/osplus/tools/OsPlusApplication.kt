@@ -5,11 +5,15 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.osplus.tools.core.PrivilegeManager
 
 class OsPlusApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 提权后端必须在任何采样启动之前装好：Shell 依赖它分发命令，
+        // 晚装一步首屏的 CPU/内存读取就会走空通道
+        PrivilegeManager.init(this)
         createChannel()
     }
 

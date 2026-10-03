@@ -18,10 +18,14 @@ object Preferences {
     private const val KEY_OVERLAY_X = "overlay_x"
     private const val KEY_OVERLAY_Y = "overlay_y"
     private const val KEY_OVERLAY_ALPHA = "overlay_alpha"
+    private const val KEY_OVERLAY_FORM = "overlay_form"
+    private const val KEY_POWER_CURRENT_FACTOR = "power_current_factor"
+    private const val KEY_POWER_DUAL_CELL = "power_serial_dual_cell"
     private const val KEY_LIVE_NOTIF = "live_notif_enabled"
     private const val KEY_NOTIF_ITEMS = "live_notif_items"
     private const val KEY_NOTIF_KEEPALIVE = "notif_keepalive_enabled"
     private const val KEY_ZRAM_RESIZE = "zram_resize_enabled"
+    private const val KEY_PRIVILEGE_MODE = "privilege_mode"
 
     /** 悬浮窗位置尚未记录时的默认落点 */
     private const val OVERLAY_DEFAULT_X = 40
@@ -119,6 +123,21 @@ object Preferences {
         sp(context).edit().putBoolean(KEY_ZRAM_RESIZE, enabled).apply()
     }
 
+    // ---------------- 提权模式 ----------------
+
+    /**
+     * 用户显式选择的提权模式名（[PrivilegeMode.name]）。
+     *
+     * null 表示「用户没选过」，由 [PrivilegeManager] 按 root > Shizuku 顺序自动挑。
+     * 存名字而不是序号：枚举顺序将来可能调整，序号会悄悄错位。
+     */
+    fun privilegeMode(context: Context): String? =
+        sp(context).getString(KEY_PRIVILEGE_MODE, null)
+
+    fun setPrivilegeMode(context: Context, name: String) {
+        sp(context).edit().putString(KEY_PRIVILEGE_MODE, name).apply()
+    }
+
     // ---------------- 帧率悬浮窗的拖动位置与不透明度 ----------------    /** 悬浮窗水平偏移（像素，相对屏幕左上角） */
     fun overlayX(context: Context): Int =
         sp(context).getInt(KEY_OVERLAY_X, OVERLAY_DEFAULT_X)
@@ -137,5 +156,47 @@ object Preferences {
 
     fun setOverlayAlpha(context: Context, alpha: Float) {
         sp(context).edit().putFloat(KEY_OVERLAY_ALPHA, alpha).apply()
+    }
+
+    // ---------------- 悬浮窗形态（复刻 Metric 的导航切换） ----------------
+
+    /**
+     * 悬浮窗形态。轻点胶囊在三种形态间循环切换，选择会持久化。
+     *
+     * - [PILL]：紧凑单行，只显示用户勾选的指标；
+     * - [LOAD]：负载监视器，多行面板列出全部指标（Metric 的核心形态）；
+     * - [MINI]：迷你监视器，极简单行两项，几乎不遮挡内容。
+     */
+    enum class OverlayForm { PILL, LOAD, MINI }
+
+    fun overlayForm(context: Context): OverlayForm =
+        runCatching {
+            OverlayForm.valueOf(sp(context).getString(KEY_OVERLAY_FORM, null) ?: return OverlayForm.PILL)
+        }.getOrDefault(OverlayForm.PILL)
+
+    fun setOverlayForm(context: Context, form: OverlayForm) {
+        sp(context).edit().putString(KEY_OVERLAY_FORM, form.name).apply()
+    }
+
+    // ---------------- 功率校准（复刻 Metric：电流倍率 + 串联双电芯） ----------------
+    //
+    // 内核电流节点在不同 SoC 上的口径差异极大（有的报设计值、有的符号反、
+    // 有的差一个固定倍率），电压节点在串联双电芯设备上只报单节电压。
+    // 两个开关决定所有 Power 展示的口径：功率 = V × I × 电流倍率 ×（双电芯 ? 2 : 1）。
+
+    /** 电流读数倍率，0.1~10.0；用于修正「功率整体偏大/偏小」的机型 */
+    fun powerCurrentFactor(context: Context): Float =
+        sp(context).getFloat(KEY_POWER_CURRENT_FACTOR, 1f).coerceIn(0.1f, 10f)
+
+    fun setPowerCurrentFactor(context: Context, factor: Float) {
+        sp(context).edit().putFloat(KEY_POWER_CURRENT_FACTOR, factor).apply()
+    }
+
+    /** 串联双电芯：总电压是读数的两倍，功率需要 ×2 修正 */
+    fun powerSerialDualCell(context: Context): Boolean =
+        sp(context).getBoolean(KEY_POWER_DUAL_CELL, false)
+
+    fun setPowerSerialDualCell(context: Context, enabled: Boolean) {
+        sp(context).edit().putBoolean(KEY_POWER_DUAL_CELL, enabled).apply()
     }
 }
