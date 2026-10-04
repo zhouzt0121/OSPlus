@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -34,7 +36,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -165,7 +169,7 @@ fun SectionCard(
 /**
  * 卡片内的分组小标签。
  *
- * 二级详情页去掉了卡片外部的小节标题后，纯控制型卡片（调速器、频率上限、充电控制等）
+ * 二级详情页去掉了卡片外部的小节标题后，纯控制型卡片（调速器、频率上限等）
  * 只剩下一排胶囊和滑块，看不出这组控件是干什么的。这里在卡片内部补一行小字说明，
  * 它比原来的外部标题更轻——不额外占一行卡片外空间，视觉上仍是「一张卡一个整体」。
  */
@@ -555,6 +559,49 @@ fun LiquidNavTabs(
                     maxLines = 1,
                 )
             }
+        }
+    }
+}
+
+/**
+ * 简易输入框：项目里没有通用 TextField，这里用最小实现。
+ *
+ * 原先是 ADB 配对表单里的私有用具（名为 AdbInputField），
+ * ADB 通道移除后被「功率校准」的电流倍率输入复用，
+ * 因此移到这里并改成与用途无关的名字。
+ */
+@Composable
+fun NumberInputField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    numeric: Boolean = false,
+) {
+    val c = osColors()
+    Column(Modifier.fillMaxWidth()) {
+        Text(label, style = OsText.micro, color = c.textTertiary)
+        Spacer(Modifier.height(4.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(c.cardAlt)
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+        ) {
+            if (value.isEmpty()) {
+                Text("—", style = OsText.value, color = c.textTertiary)
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = OsText.value.copy(color = c.textPrimary),
+                cursorBrush = SolidColor(c.primary),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (numeric) KeyboardType.Number else KeyboardType.Text,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

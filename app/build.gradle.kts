@@ -26,13 +26,46 @@ android {
         //        顶栏按钮 48dp → 36dp 正圆（原版新增 height / horizontalPadding 参数）；
         //        LiquidNavTabs 内部换成原版 LiquidBottomTabs（13 处调用点零改动）；
         //        ChoiceChip 换原版并调淡未选中灰；修复动作组与提权方式「点击后胶囊不跟随」
-        // versionCode 递增以便覆盖安装已发布的 1.2.0（code 4）
-        versionCode = 16
-        versionName = "2.5.0"
+        // 2.6.0：对照 Scene5 Alpha 补能力缺口——
+        //        新增「系统开关」页（settings get/put 类开关：显示点按操作 / 指针位置 /
+        //        强制 GPU 渲染 / 自由窗口 / 强制可调整大小 / 网络 ADB；动画速度三档；
+        //        隐藏状态栏图标多选）；
+        //        新增「提权管理」页（Root 授权状态、能力速查、探测明细、重新探测）；
+        //        概览页接线 SystemExtrasDataSource（负载 / 网络 / IO / 磁盘）；
+        //        提权相关三块组件提取为共享件，设置页与提权页共用；
+        //        版本号改读 BuildConfig，不再写死
+        //        （注：早期注释里提过的「温控配置」页从未落地，此处予以更正）
+        // 2.6.1：移除 Shizuku / ADB 两条非 Root 提权通道（实测在本应用需求下全部失效），
+        //        只保留 Root；UI 组件实验室页；输入框组件与 ADB 解耦（AdbInputField → NumberInputField）
+        // 2.6.2 / 2.6.3 / 2.6.4：系统开关页与提权管理页的迭代（开关项增删、探测明细）
+        // 2.6.5：系统级监控数据补齐——
+        //        CPU 温度语义修正（不再拿 thermal_zone0 当结温，改按 type 语义打分选 cpuss）；
+        //        ZRAM 列举改用 shell glob（File.listFiles() 在厂商 sysfs 上恒 null）；
+        //        ZRAM 解析放宽列数判据（缺 mem_used_total 时不再连容量一起丢）；
+        //        删除「界面行为」卡片（settings 写得进去但 ColorOS 不响应，「能拨但没效果」）；
+        //        删除「充电控制」（内核节点普遍不可写，功能整体不可用）；
+        //        三级页面返回改走路由栈（原来单个 route 变量会被三级覆盖二级，返回跳级）
+        // 2.7.0：修复帧率记录「重启后历史丢失」（四处独立缺陷叠加）——
+        //        ① SysFpsDataSource 探测脚本用 `[ -e ]` 判存在性，在 SELinux
+        //           拒绝父目录遍历时恒假，可用 sysfs 节点被误判为不存在，
+        //           落到已失效的 SurfaceFlinger 兜底并写入垃圾帧率（实测 119.9/7.1/1.5）；
+        //        ② startFpsRecording 先开记录开关再异步建会话，抢跑的采样
+        //           因 activeSessionId 尚为 -1 被丢弃（实测 9.6 秒只落 5 条）；
+        //        ③ 兜底通道加物理合理性闸门（≤200 FPS 且帧间隔 ≥5ms），
+        //           不可信值返回「不可读」而非把垃圾数写进图表与数据库；
+        //        ④ FpsScreen 图表区只判内存 `records.isEmpty()`，重启后打开历史
+        //           会话（viewingSamples 有数据但 records 为空）整个图表区被判成
+        //           空状态、曲线不渲染——改为统一下游数据集 `src`（历史优先）
+        //        仓库瘦身：移除 dist/（167 个第三方 Magisk 模块文件）、历史 APK 与调试截图
+        versionCode = 24
+        versionName = "2.7.0"
     }
 
     buildFeatures {
         compose = true
+        // 设置页的「版本」一行读 BuildConfig.VERSION_NAME。
+        // 写死版本号在每次发版后都会与实际包体不一致，用户报障时给的是错信息。
+        buildConfig = true
     }
 
     packaging {
@@ -117,47 +150,4 @@ dependencies {
     implementation("io.github.kyant0:capsule:2.1.3")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
-
-    // Shizuku：以 shell(uid 2000) 身份执行命令的替代提权通道。
-    //
-    // 引入它的意义在于覆盖「能解锁 BL / 有 root 能力但不想或不能装 Magisk」的设备：
-    // Shizuku 走的是系统 adb 调试通道，可读 /sys、/proc、跑 dumpsys 与 am，
-    // 足以支撑 CPU 频率控制、进程管理、GPU 与内存读取。
-    // 但它拿不到 root，因此 /data/adb 下的 Magisk 模块文件仍不可读
-    // （见 PrivilegeCapabilities.canControlPerfSched）。
-    //
-    // provider 必须一并引入：只加 api 的话 ShizukuProvider 不存在，
-    // 清单里声明的组件会在启动时抛 ClassNotFoundException。
-    implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
-
-    // BouncyCastle：仅用于生成 ADB 客户端身份的自签 X509 证书。
-    //
-    // 为什么不用 JDK 自带的 sun.security.x509：Android 上没有那个包。
-    // 也不用 Conscrypt（它在 Android 上不暴露证书签发 API）。
-    // 只需要 bcpkix（证书构建）+ bcprov（ASN.1 与算法），两个加起来约 8MB，
-    // 会被 R8 裁到实际用到的部分。
-    implementation("org.bouncycastle:bcpkix-jdk18on:1.80.2")
-    implementation("org.bouncycastle:bcprov-jdk18on:1.80.2")
-    // Conscrypt：ADB 无线调试配对必须能取 TLS 导出的密钥材料（exportKeyingMaterial）。
-    //
-    // 配对协议的设计是「先用 TLS 1.3 客户端证书认证，再从 TLS 会话导出 64 字节
-    // 密钥材料，把它拼在 6 位配对码后面当 SPAKE2 口令」。JDK 的 SSLSocket 没有
-    // 暴露 exporter（SSLSession 上没有对应方法），只有 Conscrypt 提供了
-    // Conscrypt.exportKeyingMaterial(socket, label, context, length)。
-    //
-    // 必须用捆绑版而不是系统的实现：
-    //   * Android 10 以下系统根本没有 Conscrypt 的 exporter 扩展；
-    //   * 部分 ROM 的 Conscrypt 版本过旧或被裁剪，反射探测会失败。
-    // 捆绑它会随 APK 带上约 1.2 MB 的原生库，换取「所有 Android 11+ 设备都能配对」。
-    //
-    // 注意：R8 会删掉 Conscrypt 的原生绑定入口，所以 proguard-rules.pro 里
-    // 必须保留 org.conscrypt.。
-    //
-    // 版本下限是 2.7.0：2.5.2 的 libconscrypt_jni.so 是按 4 KB 页编译的
-    // （实测 PT_LOAD 对齐 = 4096, 4096），而 Android 15+ 已强制 16 KB 内存页，
-    // 在 Android 17 真机上系统会弹出「ELF 文件对齐检查失败」的兼容性警告。
-    // 2.7.0 的同一文件对齐为 16384, 16384, 16384，合规。
-    // 升级前请用 ELF program header 的 p_align 复核，不要只看版本号。
-    implementation("org.conscrypt:conscrypt-android:2.7.0")
 }

@@ -37,13 +37,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.LiveNotif
 import com.osplus.tools.core.NotifMetric
 import com.osplus.tools.core.PrivilegeCapabilities
-import com.osplus.tools.core.PrivilegeManager
-import com.osplus.tools.core.PrivilegeMode
 import com.osplus.tools.core.Shell
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChoiceChip
 import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.NoticeBanner
+import com.osplus.tools.ui.components.NumberInputField
 import com.osplus.tools.ui.components.SectionCard
 import com.osplus.tools.ui.components.SwitchRow
 import com.osplus.tools.ui.theme.AppThemeMode
@@ -80,19 +79,11 @@ private fun openOverlayAccess(context: Context) {
 fun SettingsScreen(
     vm: DeviceViewModel,
     onOpenLiquidLab: () -> Unit = {},
+    onOpenSystemToggles: () -> Unit = {},
+    onOpenPrivilege: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val c = osColors()
-    val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
-    // 「提权方式」分段条用**用户点选**的模式驱动，而不是当前生效的通道：
-    // 点一个当前不可用的模式时，实际通道会回退，但界面必须跟着用户走，
-    // 否则表现为「点了没反应、胶囊不跟过去」
-    val privilegeSelection by vm.privilegeSelection.collectAsStateWithLifecycle()
-    val capabilities by vm.capabilities.collectAsStateWithLifecycle()
-    val probe by vm.privilegeProbe.collectAsStateWithLifecycle()
-    val privilegeMessage by vm.privilegeMessage.collectAsStateWithLifecycle()
-    // 电脑脚本激活：脚本落点与可复制的 adb 命令（展示在 ADB 分支内）
-    val scriptInfo by vm.scriptInfo.collectAsStateWithLifecycle()
     val usageAccess by vm.usageAccess.collectAsStateWithLifecycle()
     val autoRefresh by vm.autoRefresh.collectAsStateWithLifecycle()
     val themeMode by vm.themeMode.collectAsStateWithLifecycle()
@@ -105,7 +96,9 @@ fun SettingsScreen(
     var overlayGranted by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     LifecycleResumeEffect(Unit) {
         overlayGranted = Settings.canDrawOverlays(context)
-        // 从系统授权页返回时 Shizuku 授权状态可能已变化，重探一次
+        // 从系统授权页返回时 root 授权状态可能已变化，重探一次。
+        // 本页虽不再展示提权详情，但重探结果由 ViewModel 持有，
+        // 「提权管理」页与概览页的横幅都读它，所以这里仍要刷新。
         vm.refreshRootState()
         onPauseOrDispose { }
     }
@@ -115,38 +108,19 @@ fun SettingsScreen(
         kernelVersion = Shell.run("uname -r", root = false).stdout.ifBlank { "-" }
     }
 
-    // 直接复用 Shell.findSu()，不要在这里再抄一份候选列表：
-    // 原先此处独立维护了一份 6 项列表，漏了 /vendor/bin/su —— 若设备的 su
-    // 恰好落在该路径，实际提权正常、界面却显示「未找到」，用户看到自相矛盾的信息。
-    // 单一事实来源留给 Shell，UI 只负责展示。
-    val suPath = remember(rootAvailable) { Shell.findSu() ?: "未找到" }
-
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         // 统一走 bottomBarContentPadding：左右 14dp 对齐顶栏，底部避让悬浮底栏 + 系统导航栏
         contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item {
-            PrivilegeBanner(capabilities)
-        }
-
-        item {
-            PrivilegeModeCard(
-                mode = privilegeSelection,
-                probe = probe,
-                rootAvailable = rootAvailable,
-                suPath = suPath,
-                message = privilegeMessage,
-                scriptInfo = scriptInfo,
-                onDeployScript = { vm.deployActivationScript() },
-                onSelect = { vm.selectPrivilegeMode(it) },
-                onRequestShizuku = { vm.requestShizukuPermission() },
-                onPairAdb = { port, code -> vm.pairAdb(port, code) },
-                onConnectAdb = { port -> vm.connectAdb(port) },
-                onDismissMessage = { vm.clearPrivilegeMessage() },
-            )
-        }
+        // 提权相关的一切都在「提权管理」页，本页不出现第二份。
+        //
+        // 演进过程值得记一笔：这里原先内联了完整的提权模式卡
+        // （模式选择 + Shizuku 授权 + ADB 配对表单 + 电脑脚本生成），
+        // 后来新增独立提权页时又渲染了同一张卡 —— 同一套流程出现在两处，
+        // 用户不知道以哪边为准，改需求时也必然只改一边。
+        // 现在只保留下方「系统调优」卡的一行入口。
 
         item {
             SectionCard {
@@ -227,7 +201,7 @@ fun SettingsScreen(
                             },
                         )
                     }
-                    AdbInputField(
+                    NumberInputField(
                         label = "电流倍率（默认 1）",
                         value = factorText,
                         onValueChange = { t ->
@@ -347,7 +321,9 @@ fun SettingsScreen(
             SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     InfoRow("应用", "OSPlus")
-                    InfoRow("版本", "2.0.0")
+                    // 版本号读 BuildConfig，不写死：写死的版本号在每次发版后
+                    // 都会和「设置 → 关于」以及安装包对不上，用户报障时给的是错信息
+                    InfoRow("版本", com.osplus.tools.BuildConfig.VERSION_NAME)
                     InfoRow("包名", context.packageName)
                     InfoRow("设备", "${Build.MANUFACTURER} ${Build.MODEL}")
                     InfoRow("系统", "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
@@ -360,35 +336,32 @@ fun SettingsScreen(
         item {
             SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("系统调优")
+                    Spacer(Modifier.height(8.dp))
+                    SettingEntryRow(
+                        title = "提权管理",
+                        summary = "Root 授权状态、能力速查与探测明细",
+                        onClick = onOpenPrivilege,
+                    )
+                    SettingEntryRow(
+                        title = "系统开关",
+                        summary = "动画缩放、状态栏图标、开发者选项等",
+                        onClick = onOpenSystemToggles,
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionCard {
+                Column(Modifier.padding(vertical = 3.dp)) {
                     CardSectionLabel("实验")
                     Spacer(Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onOpenLiquidLab() }
-                            .padding(horizontal = 10.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                text = "Kyant 原版组件实验室",
-                                style = MiuixTheme.textStyles.main,
-                                color = MiuixTheme.colorScheme.onBackground,
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = "LiquidButton / LiquidBottomTabs / LiquidSlider / LiquidToggle 原版实现",
-                                style = MiuixTheme.textStyles.footnote2,
-                                color = MiuixTheme.colorScheme.onBackgroundVariant,
-                            )
-                        }
-                        Text(
-                            text = "›",
-                            style = MiuixTheme.textStyles.title3,
-                            color = MiuixTheme.colorScheme.onBackgroundVariant,
-                        )
-                    }
+                    SettingEntryRow(
+                        title = "Kyant 原版组件实验室",
+                        summary = "LiquidButton / LiquidBottomTabs / LiquidSlider / LiquidToggle 原版实现",
+                        onClick = onOpenLiquidLab,
+                    )
                 }
             }
         }
@@ -400,7 +373,7 @@ fun SettingsScreen(
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = "· 数据全部来自 /proc、/sys 与系统 API，不做任何云端上报。\n" +
-                            "· 频率/充电控制直接写入内核节点，不同机型可用项存在差异。\n" +
+                            "· 频率控制直接写入内核节点，不同机型可用项存在差异。\n" +
                             "· 耗电统计基于使用时长加权估算，非硬件实测功耗。",
                         style = MiuixTheme.textStyles.footnote2,
                         color = MiuixTheme.colorScheme.onBackgroundVariant,
@@ -414,296 +387,50 @@ fun SettingsScreen(
 private fun DeviceViewModelInterval(): Long = com.osplus.tools.vm.DeviceViewModel.SAMPLE_INTERVAL_MS
 
 /**
- * 顶部状态横幅。
+ * 设置页的可下钻行。
  *
- * 文案跟着**能力**走而不是跟着模式走：同是 shell 身份（Shizuku / ADB），
- * 能力完全一样，没必要分两套说法；而 Root 与 shell 的差别是实质性的，
- * 必须让用户一眼看出「哪些功能用不了、为什么」。
+ * 原先「实验」卡里内联写了这一整块 Row，新增三个入口后内联会出现四份
+ * 完全相同的 20 行代码。提取成组件，顺便修掉了内联版本的一个问题：
+ * 它硬编码了 `MiuixTheme.textStyles.main` 与 `onBackground`，
+ * 而设置页其他文字用的是 `OsText` 语义字号——同一张卡里两种字号体系并存，
+ * 在深色主题下还会出现色值不一致。这里统一到 [OsText]。
  */
 @Composable
-private fun PrivilegeBanner(caps: PrivilegeCapabilities) {
-    val mode = caps.mode
-    when {
-        mode == null -> NoticeBanner(
-            text = "未获取任何提权通道：CPU 频率、进程管理、性能调度不可用；" +
-                "基础信息读取仍可正常使用。可在下方选择 Root / Shizuku / ADB 任意一种。",
-        )
-        mode == PrivilegeMode.ROOT -> NoticeBanner(
-            text = "已通过 Root 提权，全部控制功能可用。",
-            accent = com.osplus.tools.ui.components.ChartColors.gpu,
-        )
-        else -> NoticeBanner(
-            text = "已通过 ${mode.label} 提权（shell 身份）：CPU 频率控制、进程管理、GPU/内存读取可用；" +
-                "「性能调度」读写 Magisk 模块目录（/data/adb）需要 Root，该页在本模式下不可用。",
-            accent = com.osplus.tools.ui.components.ChartColors.cpu,
-        )
-    }
-}
-
-/**
- * 提权模式选择卡。
- *
- * 三种模式各自有不同的「就绪条件」，因此每一种都给出**具体的下一步动作**
- * （请求 Shizuku 授权 / 填配对码），而不是一个灰色的「不可用」——
- * 后者会让用户不知道该怎么办。
- */
-@Composable
-private fun PrivilegeModeCard(
-    mode: PrivilegeMode?,
-    probe: PrivilegeManager.ModeProbe,
-    rootAvailable: Boolean,
-    suPath: String,
-    message: String?,
-    /** 电脑脚本激活：脚本落点与可复制的 adb 命令；未部署时为 null */
-    scriptInfo: DeviceViewModel.ScriptInfo?,
-    onDeployScript: () -> Unit,
-    onSelect: (PrivilegeMode) -> Unit,
-    onRequestShizuku: () -> Unit,
-    onPairAdb: (Int?, String) -> Unit,
-    onConnectAdb: (Int) -> Unit,
-    onDismissMessage: () -> Unit,
+private fun SettingEntryRow(
+    title: String,
+    summary: String,
+    onClick: () -> Unit,
 ) {
     val c = osColors()
-    SectionCard {
-        Column(Modifier.padding(vertical = 3.dp)) {
-            CardSectionLabel("提权方式")
-            Spacer(Modifier.height(5.dp))
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
             Text(
-                text = "三种方式身份不同：Root 可读写全部节点；Shizuku 与 ADB 均以 shell 身份运行，"
-                    + "足以读取频率、管理进程，但写不了调频节点、也读不到 /data/adb 下的模块文件。"
-                    + "两种非 Root 方式能力完全一致，区别只在怎么激活。",
+                text = title,
+                style = OsText.label,
+                color = c.textPrimary,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = summary,
                 style = OsText.micro,
                 color = c.textTertiary,
             )
-            Spacer(Modifier.height(10.dp))
-            // 提权方式：与底部悬浮导航栏同一套原版组件（见 Common.kt 的 LiquidNavTabs）
-            LiquidNavTabs(
-                items = PrivilegeMode.entries.map { it.shortLabel },
-                selectedIndex = mode?.let { PrivilegeMode.entries.indexOf(it) } ?: -1,
-                onSelect = { onSelect(PrivilegeMode.entries[it]) },
-            )
-            Spacer(Modifier.height(10.dp))
-
-            // 当前模式的就绪条件与状态
-            when (mode) {
-                PrivilegeMode.ROOT -> {
-                    InfoRow("Root", value = if (rootAvailable) "已授权" else "未授权", emphasis = true)
-                    InfoRow("su 路径", suPath)
-                }
-                PrivilegeMode.SHIZUKU -> {
-                    InfoRow(
-                        "Shizuku 服务",
-                        value = if (probe.shizukuSupported) "运行中" else "未检测到",
-                        emphasis = true,
-                    )
-                    InfoRow("授权", value = if (probe.shizukuReady) "已授权" else "未授权")
-                    if (!probe.shizukuSupported) {
-                        Spacer(Modifier.height(8.dp))
-                        NoticeBanner("未检测到 Shizuku：请先安装并启动 Shizuku App，再回到本页。")
-                    } else if (!probe.shizukuReady) {
-                        Spacer(Modifier.height(8.dp))
-                        LiquidNavTabs(
-                            items = listOf("请求 Shizuku 授权"),
-                            selectedIndex = -1,
-                            onSelect = { onRequestShizuku() },
-                        )
-                    }
-                }
-                PrivilegeMode.ADB -> {
-                    // 状态置顶：先让用户一眼看出「现在到底有没有通道」，
-                    // 再看下面两种激活方式——原来的写法把状态和操作混在一堆
-                    // InfoRow 里，用户读完仍不知道自己在哪一步。
-                    val channel = when {
-                        probe.adbReady -> "无线调试"
-                        probe.daemonReady -> "电脑脚本（守护进程）"
-                        else -> null
-                    }
-                    NoticeBanner(
-                        text = if (channel != null) {
-                            "已连接 · $channel\n以 shell 身份（uid 2000）执行命令"
-                        } else {
-                            "未连接。下方两种方式任选一种激活；激活后即可读取 CPU 占用/频率、" +
-                                "内存、网络等需要 shell 身份的数据。"
-                        },
-                        accent = if (channel != null) {
-                            com.osplus.tools.ui.components.ChartColors.gpu
-                        } else {
-                            com.osplus.tools.ui.components.ChartColors.cpu
-                        },
-                    )
-                    Spacer(Modifier.height(12.dp))
-
-                    CardSectionLabel("方式一 · 无线调试")
-                    Spacer(Modifier.height(6.dp))
-                    InfoRow("配对", if (probe.adbPaired) "已配对" else "未配对")
-                    InfoRow("连接", if (probe.adbReady) "已连接" else "未连接")
-                    Spacer(Modifier.height(8.dp))
-                    AdbPairSection(
-                        paired = probe.adbPaired,
-                        ready = probe.adbReady,
-                        onPair = onPairAdb,
-                        onConnect = onConnectAdb,
-                    )
-
-                    Spacer(Modifier.height(14.dp))
-                    CardSectionLabel("方式二 · 电脑脚本")
-                    Spacer(Modifier.height(6.dp))
-                    InfoRow(
-                        "守护进程",
-                        when {
-                            probe.daemonReady -> "运行中"
-                            probe.daemonProvisioned -> "已停止"
-                            else -> "未激活"
-                        },
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    scriptInfo?.let { info ->
-                        // 等宽字体：命令行用比例字体容易把 l/1、O/0 看混
-                        Text(
-                            text = info.command,
-                            style = OsText.caption,
-                            color = c.textPrimary,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(c.cardAlt, RoundedCornerShape(8.dp))
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                        )
-                        Spacer(Modifier.height(6.dp))
-                    }
-                    LiquidNavTabs(
-                        items = listOf(if (scriptInfo == null) "生成激活命令" else "重新生成"),
-                        selectedIndex = -1,
-                        onSelect = { onDeployScript() },
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = buildString {
-                            append("用数据线连电脑执行上面这条命令即可，不需要开无线调试。")
-                            if (probe.daemonProvisioned && !probe.daemonReady) {
-                                append("\n守护进程已停止（设备重启后一定会停），重新执行即可恢复。")
-                            }
-                        },
-                        style = OsText.micro,
-                        color = c.textTertiary,
-                    )
-                }
-                null -> {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = "尚未建立提权通道。点上方任一方式切换；" +
-                            "若三种都不可用，请先按各方式的提示完成授权或配对。",
-                        style = OsText.micro,
-                        color = c.textTertiary,
-                    )
-                }
-            }
-
-            if (message != null) {
-                Spacer(Modifier.height(10.dp))
-                NoticeBanner(text = message)
-                Spacer(Modifier.height(6.dp))
-                LiquidNavTabs(
-                    items = listOf("知道了"),
-                    selectedIndex = -1,
-                    onSelect = { onDismissMessage() },
-                )
-            }
         }
-    }
-}
-
-/**
- * ADB 配对区。
- *
- * 只让用户填 6 位配对码与端口：地址固定走回环（adbd 就在本机），
- * 配对端口留空时由 mDNS 现查——那个端口只在「使用配对码配对设备」
- * 页面打开期间存在，所以必须现查而不是缓存。
- */
-@Composable
-private fun AdbPairSection(
-    paired: Boolean,
-    ready: Boolean,
-    onPair: (Int?, String) -> Unit,
-    onConnect: (Int) -> Unit,
-) {
-    val c = osColors()
-    var code by remember { mutableStateOf("") }
-    var portText by remember { mutableStateOf("") }
-
-    InfoRow("配对状态", value = if (paired) "已配对" else "未配对", emphasis = true)
-    InfoRow("通道", value = if (ready) "已连接" else "未连接（需开启无线调试）")
-    Spacer(Modifier.height(8.dp))
-    Text(
-        text = "步骤：① 开发者选项 → 无线调试，打开开关；② 进入「使用配对码配对设备」页面，" +
-            "记下 6 位配对码；③ 在下方填入配对码并点「开始配对」。端口可以留空，会自动查找。",
-        style = OsText.micro,
-        color = c.textTertiary,
-    )
-    Spacer(Modifier.height(9.dp))
-
-    AdbInputField(
-        label = "6 位配对码",
-        value = code,
-        onValueChange = { v -> code = v.filter { it.isDigit() }.take(6) },
-        numeric = true,
-    )
-    Spacer(Modifier.height(7.dp))
-    AdbInputField(
-        label = "配对端口（可留空）",
-        value = portText,
-        onValueChange = { v -> portText = v.filter { it.isDigit() }.take(5) },
-        numeric = true,
-    )
-    Spacer(Modifier.height(9.dp))
-    LiquidNavTabs(
-        items = listOf("开始配对", "连接通道"),
-        selectedIndex = -1,
-        onSelect = {
-            if (it == 0) {
-                onPair(portText.toIntOrNull(), code)
-            } else {
-                // 连接端口与配对端口不同，这里让用户在已知时手填；
-                // 留空传 0 由后端走 mDNS 发现
-                onConnect(portText.toIntOrNull() ?: 0)
-            }
-        },
-    )
-    if (paired && !ready) {
-        Spacer(Modifier.height(8.dp))
-        NoticeBanner("已配对但通道未连通：请确认「无线调试」开关仍然打开（关掉后端口会消失）。")
-    }
-}
-
-/** 简易数字输入框：项目里没有通用 TextField，这里用最小实现 */
-@Composable
-private fun AdbInputField(
-    label: String,
-    value: String,
-    onValueChange: (String) -> Unit,
-    numeric: Boolean,
-) {
-    val c = osColors()
-    Column {
-        Text(text = label, style = OsText.micro, color = c.textTertiary)
-        Spacer(Modifier.height(4.dp))
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            singleLine = true,
-            keyboardOptions = if (numeric) {
-                KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
-            } else {
-                KeyboardOptions.Default
-            },
-            textStyle = MiuixTheme.textStyles.body1.copy(color = c.textPrimary),
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(c.cardAlt, RoundedCornerShape(10.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+        Text(
+            text = "›",
+            style = OsText.value,
+            color = c.textTertiary,
         )
     }
 }
+
 
 /**
  * 实时任务通知的指标项多选网格。

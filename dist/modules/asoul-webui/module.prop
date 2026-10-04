@@ -1,7 +1,0 @@
-id=asoul_affinity_opt
-name=A-SOUL Games Optimization
-version=Kana · WebUI
-versionCode=284
-author=nakixii
-description=Game threads tweaker for Android. With WebUI control panel.
-updateJson=https://github.com/nakixii/Magisk_AsoulOpt/raw/main/AsoulOpt.json

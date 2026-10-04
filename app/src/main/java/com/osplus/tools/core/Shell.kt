@@ -16,16 +16,15 @@ import java.util.concurrent.atomic.AtomicReference
  * ## 提权后端
  *
  * 2.2.0 起本对象不再是「root 专用」，而是按 [PrivilegeManager] 当前选定的
- * [PrivilegeMode] 把命令分发给对应的 [PrivilegeBackend]：
+ * [PrivilegeMode] 把命令分发给对应的 [PrivilegeBackend]。
+ * 目前只有一条通道：[PrivilegeMode.ROOT] → `su`。
  *
- * - [PrivilegeMode.ROOT] → `su`
- * - [PrivilegeMode.SHIZUKU] → Shizuku 的 shell 通道
- * - [PrivilegeMode.ADB] → 无线调试配对后建立的 shell 通道
+ * （Shizuku 与 ADB 两条 shell 身份通道曾存在过，因实测在本应用的功能需求下
+ * 全部失效而被移除，详见 [PrivilegeMode] 的说明。）
  *
  * **对外 API 保持原样**：各 DataSource 仍按 `Shell.run(cmd, root = true)` 调用，
- * 不需要知道底层是谁在跑命令。`root = true` 的语义从「用 root 跑」
- * 放宽为「用当前可用的最高身份跑」——无 root 设备上原本直接失败的操作，
- * 现在会在 Shizuku / ADB 模式下真正执行成功。
+ * 不需要知道底层是谁在跑命令。`root = true` 的语义是「用当前可用的最高身份跑」——
+ * 无 root 设备上直接失败，而不是静默降级成普通 shell。
  */
 object Shell {
 
@@ -55,7 +54,26 @@ object Shell {
         "/data/adb/magisk/su",
     )
 
-    /** 探测 su 可执行文件位置 */
+    /**
+     * 探测 su 可执行文件位置（**同步、仅按路径判断**）。
+     *
+     * ## 这个方法的局限，必须知道
+     *
+     * `File.exists()` 需要**整条父目录链都可搜索**才能返回 true。而 KernelSU / APatch /
+     * Magisk 的 su 都在 `/data/adb/` 下，该目录对应用 uid 与 shell 身份（uid 2000）
+     * **都不可搜索**（SELinux）。结果是：
+     *
+     * - 路径**真存在**时，`exists()` 依然返回 false —— 无法区分「没有 root」与
+     *   「有 root 但目录被隔离」；
+     * - 实测对照：`ls -l /data/adb/ksu/bin/su` 报 `Permission denied`，
+     *   而一个**确定不存在**的 `/data/adb/ksu/bin/su_not_exist_xyz` **报同样的
+     *   Permission denied** —— 说明这个错误信息来自父目录，**不能用来判断 su 存否**。
+     *
+     * 因此**不要**依据本方法的 false 结论就说「设备没有 root」。要判断 root 是否
+     * 真的可用，应当用 [probeSuViaShell]（走 `command -v su`，与
+     * `Runtime.exec("su")` 同一条机制）或直接尝试执行 `su -c id -u`。
+     * 本方法只用于「能确定时给出路径」这一种情形。
+     */
     fun findSu(): String? {
         suPathCache?.let { return it }
         val found = candidateSuPaths.firstOrNull { File(it).exists() }
@@ -64,11 +82,33 @@ object Shell {
     }
 
     /**
+     * 走 shell 探测 `su` 是否可执行，返回其解析到的路径。
+     *
+     * 这是判断「root 是否真的可用」的**正确方式**，理由：
+     *
+     * 1. **与执行路径一致**。KernelSU/Magisk 会把 `su` 注入进程 PATH（或提供
+     *    一个 `/system/bin/su` 的绑定挂载）。`Runtime.exec("su")` / `su -c ...`
+     *    靠的就是 PATH 解析，`command -v su` 走同一条路——它说找得到，就真的能执行。
+     * 2. **绕开目录搜索限制**。不依赖应用去 stat `/data/adb/...`，而是让 shell
+     *    自己解析，避免上一段说的「父目录不可搜索 ⇒ 一律 false」的假阴性。
+     *
+     * 注意仍然可能被**授权弹窗**挡住：KernelSU 首次调用 `su` 会弹授权框，
+     * 因此本方法**不应在开机自启路径上调用**（无人可点，会卡启动）。
+     */
+    suspend fun probeSuViaShell(): String? = withContext(Dispatchers.IO) {
+        // `command -v` 是 POSIX 标准、无需子 shell；找不到时输出空 + 退出码非 0
+        val r = runProcess(
+            arrayOf("/system/bin/sh", "-c", "command -v su"),
+            COMMAND_TIMEOUT_MS,
+        )
+        r.stdout.trim().takeIf { it.isNotEmpty() && r.success }
+    }
+
+    /**
      * 判断设备是否已获取 root。
      *
-     * 语义保持为「**本机是否存在可用的 su**」，与当前选定的提权模式无关——
-     * 设置页要用它来展示「设备具备哪些模式可供选择」，
-     * 若跟随当前模式返回，切到 Shizuku 后就会显示成「未获取 root」，是误导。
+     * 语义是「**本机是否存在可用的 su**」，与当前选定的提权模式无关——
+     * 界面要用它来展示「设备是否具备 root」。
      * 需要判断「当前通道是否能用」请用 [isPrivilegeAvailable]。
      */
     suspend fun isRootAvailable(force: Boolean = false): Boolean = withContext(Dispatchers.IO) {

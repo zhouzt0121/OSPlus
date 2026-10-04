@@ -48,8 +48,10 @@ import com.osplus.tools.ui.screen.OverviewScreen
 import com.osplus.tools.ui.screen.PerfScreen
 import com.osplus.tools.ui.screen.PerfSchedScreen
 import com.osplus.tools.ui.screen.PowerScreen
+import com.osplus.tools.ui.screen.PrivilegeScreen
 import com.osplus.tools.ui.screen.ProcessDetailScreen
 import com.osplus.tools.ui.screen.SettingsScreen
+import com.osplus.tools.ui.screen.SystemTogglesScreen
 import com.osplus.tools.ui.theme.OSPlusTheme
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
@@ -68,6 +70,8 @@ private enum class RootTab { Overview, Perf, Fps, Power }
 /** 一级页之外的二级路由。设置与详情页共用同一层，保证返回手势行为一致。 */
 private const val RouteSettings = "Settings"
 private const val RouteLiquidLab = "LiquidLab"
+private const val RouteSystemToggles = "SystemToggles"
+private const val RoutePrivilege = "Privilege"
 
 private fun tabKey(tab: RootTab) = "tab-${tab.name}"
 
@@ -95,7 +99,15 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
 
     OSPlusTheme(mode = themeMode, monet = monet) {
         var rootTab by rememberSaveable { mutableStateOf(RootTab.Overview) }
-        var route by rememberSaveable { mutableStateOf<String?>(null) }
+        // 二级路由栈。**必须是栈而不是单个值**：
+        // 「设置 → 系统开关」是三级导航，用一个 `route` 变量会把「设置」覆盖掉，
+        // 于是从系统开关按返回直接落到一级页（概览/性能…），而不是回到设置页。
+        // 同理「设置 → 提权管理」「设置 → Kyant 实验室」也一样。
+        // 用一个 List 记录完整路径，返回时弹栈，层级语义才对得上。
+        var routeStack by rememberSaveable { mutableStateOf(listOf<String>()) }
+        val route: String? = routeStack.lastOrNull()
+        fun pushRoute(r: String) { routeStack = routeStack + r }
+        fun popRoute() { if (routeStack.isNotEmpty()) routeStack = routeStack.dropLast(1) }
 
         val detail = route?.let { name ->
             OverviewDetail.entries.firstOrNull { it.name == name }
@@ -118,7 +130,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
             state = backState,
             isBackEnabled = route != null || rootTab != RootTab.Overview,
             onBackCompleted = {
-                if (route != null) route = null else rootTab = RootTab.Overview
+                if (routeStack.isNotEmpty()) popRoute() else rootTab = RootTab.Overview
             },
         )
 
@@ -127,6 +139,8 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
         // 顶栏标题：二级页取枚举里的文案（与页面同一份定义，不会漂移），一级页取页签名
         val topTitle = when {
             settingsOpen -> "设置"
+            route == RouteSystemToggles -> "系统开关"
+            route == RoutePrivilege -> "提权管理"
             detail != null -> detail.title
             rootTab == RootTab.Overview -> "概览"
             rootTab == RootTab.Perf -> "性能"
@@ -165,7 +179,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                 Column(Modifier.fillMaxSize()) {
                     OsTopBar(
                         title = topTitle,
-                        onBack = if (route != null) ({ route = null }) else null,
+                        onBack = if (route != null) ({ popRoute() }) else null,
                         backdrop = topBarBackdrop,
                         actions = {
                             if (rootTab == RootTab.Overview && route == null) {
@@ -206,7 +220,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                 OsTopBarAction(
                                     icon = Icons.Rounded.Settings,
                                     contentDescription = "设置",
-                                    onClick = { route = RouteSettings },
+                                    onClick = { pushRoute(RouteSettings) },
                                     backdrop = topBarBackdrop,
                                 )
                             }
@@ -249,10 +263,16 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                 when {
                                     key == RouteSettings -> SettingsScreen(
                                         viewModel,
-                                        onOpenLiquidLab = { route = RouteLiquidLab },
+                                        onOpenLiquidLab = { pushRoute(RouteLiquidLab) },
+                                        onOpenSystemToggles = { pushRoute(RouteSystemToggles) },
+                                        onOpenPrivilege = { pushRoute(RoutePrivilege) },
                                     )
 
                                     key == RouteLiquidLab -> LiquidLabScreen()
+
+                                    key == RouteSystemToggles -> SystemTogglesScreen(viewModel)
+
+                                    key == RoutePrivilege -> PrivilegeScreen(viewModel)
 
                                     keyDetail != null -> when (keyDetail) {
                                         OverviewDetail.Memory -> MemDetailScreen(viewModel)
@@ -264,12 +284,12 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
 
                                     keyTab == RootTab.Overview -> OverviewScreen(
                                         vm = viewModel,
-                                        onOpen = { route = it.name },
+                                        onOpen = { pushRoute(it.name) },
                                         onOpenPower = { rootTab = RootTab.Power },
                                         onOpenFps = { rootTab = RootTab.Fps },
                                     )
 
-                                    keyTab == RootTab.Perf -> PerfScreen(viewModel) { route = it.name }
+                                    keyTab == RootTab.Perf -> PerfScreen(viewModel) { pushRoute(it.name) }
                                     keyTab == RootTab.Fps -> FpsScreen(viewModel)
                                     else -> PowerScreen(viewModel)
                                 }
@@ -292,7 +312,9 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                 selectedIndex = rootTab.ordinal,
                 onSelect = {
                     rootTab = RootTab.entries[it]
-                    route = null
+                    // 切一级页签时清空整条路由栈：栈里是上一个页签的二级/三级页面，
+                    // 留着它们会让新页签一进去就直接显示旧页签的子页面
+                    routeStack = emptyList()
                 },
                 backdrop = backdrop,
                 modifier = Modifier.align(Alignment.BottomCenter),

@@ -81,8 +81,8 @@ fun PerfSchedScreen(vm: DeviceViewModel) {
     val notice by vm.schedNotice.collectAsStateWithLifecycle()
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
     val refreshing by vm.schedRefreshing.collectAsStateWithLifecycle()
-    // 性能调度读写的是 /data/adb 下的 Magisk 模块文件，**只有 Root 能读**
-    // （Shizuku / ADB 都是 shell 域）。因此门控用能力表而不是 rootAvailable：
+    // 性能调度读写的是 /data/adb 下的 Magisk 模块文件，**只有 Root 能读**。
+    // 因此门控用能力表而不是 rootAvailable：
     // 前者能区分「没提权」和「提权了但身份不够」这两种完全不同的原因。
     val caps by vm.capabilities.collectAsStateWithLifecycle()
     val schedEnabled = caps.canControlPerfSched

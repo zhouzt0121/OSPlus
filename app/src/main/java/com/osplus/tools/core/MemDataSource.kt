@@ -62,29 +62,61 @@ object MemDataSource {
     )
 
     /** 汇总所有 zram 设备的容量与占用 */
-    private fun readZram(): ZramStat {
-        val devices = File("/sys/block").listFiles()
-            ?.filter { it.name.startsWith("zram") }
-            ?.map { it.name }
-            ?.sorted() ?: emptyList()
+    private suspend fun readZram(): ZramStat {
+        // **不能用 File.listFiles() 列举 /sys/block。**
+        // 实测：应用身份与 shell 身份对 /sys/block/zram0/ 一律 Permission denied
+        // （SELinux），listFiles() 返回 null → devices 为空 → 总容量恒为 0 →
+        // 界面显示「ZRAM 未启用」，而设备实际有 12 GB zram。
+        // 这是本项目在 sysfs 上反复踩的同一个坑（见 CpuDataSource / BatteryDataSource
+        // 里的同类注释），必须交给 root shell 用 glob 展开。
+        val script = buildString {
+            append("for z in /sys/block/zram*; do n=\$(basename \$z); ")
+            append("sz=\$(cat \$z/disksize 2>/dev/null); ")
+            append("u=\$(cat \$z/mem_used_total 2>/dev/null); ")
+            append("[ -z \"\$u\" ] && u=\$(cat \$z/mem_used 2>/dev/null); ")
+            append("[ -z \"\$u\" ] && u=\$(cat \$z/mem_used_bytes 2>/dev/null); ")
+            append("o=\$(cat \$z/orig_data_size 2>/dev/null); ")
+            append("[ -d \$z ] && echo \"\$n|\$sz|\$u|\$o\"; done")
+        }
+        val out = Shell.run(script, root = true).stdout
 
+        val devices = mutableListOf<String>()
         var total = 0L
         var used = 0L
         var orig = 0L
-        for (name in devices) {
-            total += readNodeKb("/sys/block/$name/disksize")
-            used += readNodeKb("/sys/block/$name/mem_used_total")
-            orig += readNodeKb("/sys/block/$name/orig_data_size")
+        out.lineSequence().forEach { line ->
+            val cols = line.trim().split('|')
+            val name = cols.getOrNull(0)?.trim().orEmpty()
+            if (name.isEmpty()) return@forEach
+            devices += name
+            total += readKb(cols.getOrNull(1))
+            used += readKb(cols.getOrNull(2))
+            orig += readKb(cols.getOrNull(3))
         }
-        return ZramStat(total, used, orig, devices)
+        return ZramStat(total, used, orig, devices.sorted())
     }
 
-    /** 节点单位可能是字节，统一换算为 KB */
-    private fun readNodeKb(path: String): Long {
-        val raw = runCatching { File(path).readText().trim() }.getOrNull() ?: return 0L
-        val v = raw.toLongOrNull() ?: return 0L
-        // disksize 以字节为单位，其余 zram 统计项也是字节
+    /** 把节点原始字节值换算成 KB；空/非法一律 0 */
+    private fun readKb(raw: String?): Long {
+        val v = raw?.trim()?.toLongOrNull() ?: return 0L
         return if (v > 1_000_000L) v / 1024L else v
+    }
+
+    /**
+     * 列出全部 zram 块设备名（`zram0`、`zram1`…）。
+     *
+     * 必须走 root shell 的 glob 展开：`File("/sys/block").listFiles()` 在
+     * Android 12+ 被 SELinux 拒绝，恒返回 null。
+     */
+    private suspend fun listZramDevices(): List<String> {
+        val out = Shell.run(
+            "for z in /sys/block/zram*; do [ -d \$z ] && basename \$z; done",
+            root = true,
+        ).stdout
+        return out.lineSequence().map { it.trim() }
+            .filter { it.startsWith("zram") }
+            .toList()
+            .sorted()
     }
 
     /**
@@ -139,9 +171,10 @@ object MemDataSource {
      * 不执行 mkswap/swapon——0 字节的设备无法格式化，swapon 必然失败。
      */
     suspend fun resizeZram(sizeKb: Long): Boolean {
-        val devices = File("/sys/block").listFiles()
-            ?.filter { it.name.startsWith("zram") }
-            ?.map { it.name } ?: return false
+        // 同 readZram()：不能用 File.listFiles() 列举 /sys/block（SELinux 拒绝），
+        // 否则 devices 恒为空、本函数直接 return false —— ZRAM 调整功能整体不可用。
+        val devices = listZramDevices()
+        if (devices.isEmpty()) return false
         val active = activeSwapDevices()
         val targets = devices.filter { it in active }.ifEmpty { devices }
 
@@ -163,8 +196,10 @@ object MemDataSource {
                     "$swapon $dev -p 0 >/dev/null 2>&1"
             }
             ok = ok && Shell.run(cmd, root = true).success
-            // 写后回读校验：disksize 写入失败时节点仍为 0
-            val applied = readNodeKb("/sys/block/$name/disksize")
+            // 写后回读校验：disksize 写入失败时节点仍为 0。
+            // 走 Shell.readNode（直读优先，失败降级 root），与写路径的身份一致。
+            val appliedRaw = Shell.readNode("/sys/block/$name/disksize", root = true)
+            val applied = readKb(appliedRaw)
             if (applied !in (sizeKb - 1)..(sizeKb + 1)) ok = false
         }
         return ok

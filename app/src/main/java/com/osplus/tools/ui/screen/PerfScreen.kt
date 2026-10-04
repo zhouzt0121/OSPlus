@@ -41,6 +41,9 @@ import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
 import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
+import com.osplus.tools.ui.components.frameRateMax
+import com.osplus.tools.ui.components.frameRateTicks
+import com.osplus.tools.ui.components.panelRefreshHz
 import com.osplus.tools.ui.components.pressable
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.ui.theme.OsText
@@ -71,6 +74,9 @@ private val WindowSeconds = listOf(60, 300, 900, 1800)
  */
 @Composable
 fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
+    // 面板刷新率上限，作为帧率纵轴的常驻参照（见 Charts.frameRateMax）。
+    // 变量名带 Hz 后缀以免遮蔽同名 composable。
+    val panelHz = panelRefreshHz()
     val history by vm.history.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
     val gpu by vm.gpu.collectAsStateWithLifecycle()
@@ -254,10 +260,15 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                 MetricChartCard(
                     title = "实时帧率",
                     values = downsample(samples.map { it.fps }, slots),
-                    maxValue = autoMax(samples.map { it.fps }, 0f, 60f),
+                    // 纵轴跟着峰值走 + 面板上限作参照，见 frameRateMax
+                    maxValue = frameRateMax(
+                        observedPeak = samples.maxOfOrNull { it.fps } ?: 0f,
+                        panelMax = panelHz,
+                    ),
                     color = ChartColors.fps,
                     unit = "FPS",
                     subtitle = "需在「帧率」页开启记录",
+                    yTicks = { frameRateTicks(it) },
                     axisStartLabel = axisStart,
                 )
                 Hairline(verticalPadding = 12.dp)

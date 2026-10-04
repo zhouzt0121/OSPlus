@@ -20,10 +20,9 @@ data class CommandResult(
 /**
  * 提权通道后端。
  *
- * 三种模式（Root / Shizuku / ADB）在「怎么拿到高权限」上完全不同，
- * 但拿到之后要做的事是一样的：把一条 shell 命令交给那个身份去执行。
- * 因此接口只暴露三个动作——探测可用性、跑命令、写节点——
- * 上层（各 DataSource）对此一无所知，也就不会因为新增模式而需要改动。
+ * 目前只有一种实现：[RootBackend]。接口被保留而不是直接删掉，
+ * 是为了让 [Shell] 与各 DataSource 继续面向抽象调用 ——
+ * 它们不需要知道底层是谁在执行命令，将来若再引入通道也不用改调用方。
  *
  * 实现者必须自行保证：
  * 1. **有超时**（见 [Shell.COMMAND_TIMEOUT_MS] 的说明，挂死会导致整个监控停摆）；
@@ -33,7 +32,7 @@ data class CommandResult(
  */
 interface PrivilegeBackend {
 
-    /** 该后端在当前设备上是否可用（root 已授权 / Shizuku 已运行且已授权 / ADB 已配对） */
+    /** 该后端在当前设备上是否可用（root 已授权） */
     suspend fun isAvailable(): Boolean
 
     /**
@@ -47,7 +46,7 @@ interface PrivilegeBackend {
     /**
      * 向节点写入内容（需要先取得可写权限）。
      *
-     * 默认实现走 `chmod` + 重定向；Shizuku / ADB 两个后端复用同一套。
+     * 默认实现走 `chmod` + 重定向。
      */
     suspend fun writeNode(path: String, value: String, timeoutMs: Long): Boolean {
         val cmd = "chmod 0644 '$path' 2>/dev/null; echo '$value' > '$path' 2>/dev/null"
@@ -58,8 +57,7 @@ interface PrivilegeBackend {
 /**
  * 基于本地 `su` 二进制的 Root 后端。
  *
- * 与旧实现的行为完全一致（先 `-c` 单发，失败再走交互式 su 会话），
- * 抽出来只是为了和另外两个后端放在同一层对比，行为不变。
+ * 先 `-c` 单发，失败再走交互式 su 会话。
  */
 class RootBackend(
     private val suPath: () -> String?,
@@ -105,38 +103,6 @@ class RootBackend(
 
     private suspend fun readBack(path: String, expect: String): Boolean =
         run("cat '$path'", timeoutMs = 2_000L).stdout.trim() == expect.trim()
-}
-
-/**
- * 基于 shell 身份（uid 2000）的后端，Shizuku 与 ADB 共用。
- *
- * 两者拿到身份的方式不同，但**拿到之后调用形式完全一致**：
- * 都是「把命令字符串交给一个具备 shell 权限的执行器」。
- * 因此差别被收敛到 [execShell] 这一个方法上，其余逻辑复用。
- *
- * @param execShell 以 shell 身份执行命令并返回标准输出；失败抛异常
- */
-class ShellBackend(
-    private val execShell: suspend (command: String, timeoutMs: Long) -> CommandResult,
-) : PrivilegeBackend {
-
-    override suspend fun isAvailable(): Boolean =
-        runCatching { run("id -u", 3_000L).stdout.trim() }
-            .getOrDefault("")
-            .let { it == "2000" || it == "0" }
-
-    override suspend fun run(command: String, timeoutMs: Long): CommandResult =
-        runCatching { execShell(command, timeoutMs) }
-            .getOrElse { e -> CommandResult(false, "", e.message ?: e.toString()) }
-
-    override suspend fun writeNode(path: String, value: String, timeoutMs: Long): Boolean {
-        run("chmod 0644 '$path' 2>/dev/null", timeoutMs)
-        val res = run("echo '$value' > '$path'", timeoutMs)
-        // shell 身份对 sysfs 的写入经常「静默失败」：重定向失败时退出码仍是 0。
-        // 所以必须回读确认，不能只看 success。
-        val back = run("cat '$path' 2>/dev/null", 2_000L).stdout.trim()
-        return back == value.trim() || res.success && back.isNotEmpty()
-    }
 }
 
 /** 本地 shell 后端（无任何提权，`/system/bin/sh`） */

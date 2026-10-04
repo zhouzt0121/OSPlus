@@ -41,9 +41,9 @@ class FpsRecordTest {
 
     @Test
     fun `column count equals base plus per core fields`() {
-        // 8 个基础列 + 每核 2 列 + GPU/内存/功耗/温度 5 列
+        // 9 个基础列（含 2.6.x 新增的 fps_sys）+ 每核 2 列 + GPU/内存/功耗/温度 5 列
         val coreCount = 8
-        val expected = 8 + coreCount * 2 + 5
+        val expected = 9 + coreCount * 2 + 5
         assertEquals(expected, FpsRecord.csvHeader(coreCount).split(',').size)
         assertEquals(expected, sample(coreCount).toCsvRow(coreCount).split(',').size)
     }

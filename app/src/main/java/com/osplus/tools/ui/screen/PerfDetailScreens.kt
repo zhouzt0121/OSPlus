@@ -51,10 +51,9 @@ fun CpuDetailScreen(vm: DeviceViewModel) {
     val cpu by vm.cpu.collectAsStateWithLifecycle()
     val coreIndexes by vm.coreIndexes.collectAsStateWithLifecycle()
     // 变频控件按**能力**门控，而不是按「设备有没有 su」：
-    // 调频节点的 SELinux 标签 sysfs_devices_system_cpu 只给 root 写权限，
-    // Shizuku / ADB 虽然通道可用、能读频率，但写入会被拒绝
-    // （实测 SM8750/Android17/uid2000 返回 Permission denied）。
-    // 若沿用 rootAvailable，在 ADB 模式下控件会亮起来然后必然失败。
+    // 调频节点的 SELinux 标签 sysfs_devices_system_cpu 只给 root 写权限
+    // （实测 SM8750/Android15/uid2000 返回 Permission denied）。
+    // 用能力表可以让门控与「哪些通道真的能写」保持一致。
     val caps by vm.capabilities.collectAsStateWithLifecycle()
     val freqEditable = caps.canWriteSysfs
     val latest = history.lastOrNull()

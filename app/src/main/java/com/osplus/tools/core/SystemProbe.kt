@@ -42,6 +42,81 @@ object SystemProbe {
 
     private const val SEP = "@@OSPLUS@@"
 
+    /**
+     * 一次性普查所有候选系统节点的真机可用性。
+     *
+     * 输出的每一行形如 `OK|路径|内容` / `PERM|路径|行` / `NO|路径`，直接打
+     * [PrivilegeLog] 供人工核对。用途：换机型后快速确认「哪些节点真的可读」，
+     * 避免凭文档假设写死候选表（本项目已在 thermal_zone0、measured_fps 上各踩过一次）。
+     *
+     * **只在需要盘点数据源时手动调用**，不在采样循环里跑。
+     */
+    suspend fun census(): Unit = withContext(Dispatchers.IO) {
+        val candidates = listOf(
+            // CPU
+            "/proc/stat",
+            "/sys/devices/system/cpu/possible",
+            "/sys/devices/system/cpu/present",
+            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
+            "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq",
+            "/sys/devices/system/cpu/cpu0/topology/physical_package_id",
+            "/proc/uptime",
+            // GPU
+            "/sys/class/kgsl/kgsl-3d0/clock_mhz",
+            "/sys/class/kgsl/kgsl-3d0/gpuclk",
+            "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
+            "/sys/class/kgsl/kgsl-3d0/gpubusy",
+            "/sys/class/kgsl/kgsl-3d0/max_gpuclk",
+            "/sys/class/kgsl/kgsl-3d0/gpu_model",
+            "/sys/class/kgsl/kgsl-3d0/gpu_available_frequencies",
+            "/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq",
+            "/sys/class/kgsl/kgsl-3d0/devfreq/governor",
+            "/sys/class/kgsl/kgsl-3d0/devfreq/available_governors",
+            "/sys/class/devfreq/3d00000.qcom,kgsl-3d0/cur_freq",
+            "/sys/class/devfreq/3d00000.qcom,kgsl-3d0/gpu_load",
+            // 内存
+            "/proc/meminfo",
+            "/proc/swaps",
+            "/sys/block/zram0/disksize",
+            "/sys/block/zram0/mem_used_total",
+            // 电池 / 功耗
+            "/sys/class/power_supply/battery/current_now",
+            "/sys/class/power_supply/battery/voltage_now",
+            "/sys/class/power_supply/battery/temp",
+            "/sys/class/power_supply/battery/charge_counter",
+            "/sys/class/power_supply/battery/power_now",
+            "/sys/class/power_supply/battery/input_current_now",
+            "/sys/class/power_supply/bms/current_now",
+            "/sys/class/power_supply/bms/voltage_now",
+            "/sys/class/power_supply/bms/charge_counter",
+            // 温度
+            "/sys/class/thermal/thermal_zone0/temp",
+            "/sys/class/thermal/thermal_zone0/type",
+            "/sys/class/hwmon/hwmon0/temp1_input",
+            // 扩展
+            "/proc/loadavg",
+            "/proc/net/dev",
+            "/proc/pressure/io",
+            "/proc/diskstats",
+            // 显示
+            "/sys/class/drm/card0-sde-crtc-0/measured_fps",
+            "/sys/class/drm/card0-sde-crtc-1/measured_fps",
+        )
+        val script = buildString {
+            append("echo \"UID=\$(id -u)\"\n")
+            candidates.forEach { p ->
+                append("if [ -r '$p' ]; then printf 'OK|%s|' '$p'; head -c 200 '$p' 2>/dev/null | head -1; ")
+                append("elif [ -e '$p' ]; then printf 'PERM|%s|' '$p'; ls -l '$p' 2>&1 | head -1; ")
+                append("else printf 'NO|%s\\n' '$p'; fi; ")
+                append("echo\n")
+            }
+        }
+        val out = Shell.run(script, root = true).stdout
+        out.lineSequence().filter { it.isNotBlank() }.forEach {
+            PrivilegeLog.i("Census", it.take(240))
+        }
+    }
+
     /** 一次性读取所有指标所需的 root 脚本 */
     private fun buildScript(): String = buildString {
         appendLine("cat /proc/stat 2>/dev/null")
@@ -50,7 +125,17 @@ object SystemProbe {
         appendLine("echo '$SEP'")
         appendLine("cat /proc/swaps 2>/dev/null")
         appendLine("echo '$SEP'")
-        appendLine("for z in /sys/block/zram*/; do n=\$(basename \$z); echo \"\$n \$(cat \$z/disksize 2>/dev/null) \$(cat \$z/mem_used_total 2>/dev/null)\"; done")
+        appendLine("for z in /sys/block/zram*/; do n=\$(basename \$z); " +
+            "sz=\$(cat \$z/disksize 2>/dev/null); " +
+            // 已用大小节点名跨内核不一：新内核是 mem_used_total，部分旧内核是
+            // mem_used / mem_used_bytes / mem_used_kb。逐个试，取第一个有值的。
+            "u=\$(cat \$z/mem_used_total 2>/dev/null); " +
+            "[ -z \"\$u\" ] && u=\$(cat \$z/mem_used 2>/dev/null); " +
+            "[ -z \"\$u\" ] && u=\$(cat \$z/mem_used_bytes 2>/dev/null); " +
+            "[ -z \"\$u\" ] && u=\$(cat \$z/mem_used_kb 2>/dev/null); " +
+            // orig_data_size 是压缩前原始数据量，可作为「已用」的等价口径兜底
+            "[ -z \"\$u\" ] && u=\$(cat \$z/orig_data_size 2>/dev/null); " +
+            "echo \"\$n \$sz \$u\"; done")
         appendLine("echo '$SEP'")
         appendLine("cat /sys/class/kgsl/kgsl-3d0/clock_mhz 2>/dev/null")
         appendLine("cat /sys/class/kgsl/kgsl-3d0/gpu_busy_percentage 2>/dev/null")
@@ -132,13 +217,18 @@ object SystemProbe {
         }
 
         // ---- zram ----
+        //
+        // 判据必须是 `>= 2` 而不是 `>= 3`：当内核没有 `mem_used_total` 这类
+        // 「已用」节点时（真机 SM8750 就是这样），脚本输出是 `zram0 <disksize> `
+        // ——只有 2 个有效字段，`split` 后长度 2。若按 `>= 3` 过滤会被整行丢弃，
+        // 于是总容量也一起丢掉，界面显示「ZRAM 未启用」，而设备其实有 12 GB zram。
         var zramTotal = 0L
         var zramUsed = 0L
         zramPart.lineSequence().forEach { line ->
             val cols = line.trim().split(Regex("\\s+"))
-            if (cols.size >= 3) {
-                zramTotal += (cols[1].toLongOrNull() ?: 0L) / 1024L
-                zramUsed += (cols[2].toLongOrNull() ?: 0L) / 1024L
+            if (cols.size >= 2) {
+                zramTotal += (cols.getOrNull(1)?.toLongOrNull() ?: 0L) / 1024L
+                zramUsed += (cols.getOrNull(2)?.toLongOrNull() ?: 0L) / 1024L
             }
         }
 

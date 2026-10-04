@@ -138,9 +138,21 @@ class FpsOverlayService : Service() {
         }
     }
 
+    /**
+     * 当前用于显示的**有效帧率**：系统级优先。
+     *
+     * 悬浮窗/通知的意义恰恰在于「盖在别的应用上面看帧率」——这种场景下
+     * 本应用自己的 Choreographer 早已不代表屏幕实况，必须优先用系统级实测值。
+     * 系统级不可读时才退回自身值，保证始终有数可显。
+     */
+    private fun effectiveFps(): Float {
+        val sys = LiveMetrics.snapshot.value.sysFps
+        return if (sys > 0f) sys else FpsRecorder.sample.value.fps
+    }
+
     /** 取当前一刻的实时读数快照，供悬浮窗与通知共用 */
     private fun currentOverlayValues() = OverlayValues(
-        fps = FpsRecorder.sample.value.fps,
+        fps = effectiveFps(),
         snapshot = LiveMetrics.snapshot.value,
         recording = FpsRecorder.recording.value,
         metrics = LiveNotif.metrics.value,
@@ -566,7 +578,7 @@ class FpsOverlayService : Service() {
         recording: Boolean,
     ): Notification {
         val s = LiveMetrics.snapshot.value
-        val fps = FpsRecorder.sample.value.fps
+        val fps = effectiveFps()
         val shown = metrics.take(LiveNotif.MAX_METRICS).ifEmpty { LiveNotif.defaultMetrics }
 
         val style = Notification.MetricStyle()
@@ -680,7 +692,7 @@ class FpsOverlayService : Service() {
      */
     private fun applyNotificationText(views: RemoteViews, metrics: List<NotifMetric>) {
         val s = LiveMetrics.snapshot.value
-        val fps = FpsRecorder.sample.value.fps
+        val fps = effectiveFps()
         val shown = metrics.take(LiveNotif.MAX_METRICS).ifEmpty { LiveNotif.defaultMetrics }
         val dot = if (FpsRecorder.recording.value) "● " else ""
         val parts = shown.map { "${it.label} ${compact(it, s, fps)}" }

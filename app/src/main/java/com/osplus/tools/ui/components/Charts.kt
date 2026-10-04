@@ -1,5 +1,8 @@
 package com.osplus.tools.ui.components
 
+import android.content.Context
+import android.os.Build
+import android.view.WindowManager
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -29,6 +32,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -287,6 +291,15 @@ fun OsMetricRing(
  *
  * 用于观察长窗口下的波动：柱状图在几十个采样点时只能看出高低，
  * 折线能直观呈现起伏、持续低帧区间与回升过程。
+ *
+ * ## Y 轴
+ *
+ * 左侧保留 [yAxisWidth] 宽的刻度栏，画水平网格线 + 数值标签，标签后缀 [unit]。
+ * 刻度来源由 [ticks] 决定：默认按量程等分 5 档；帧率场景传
+ * `{ frameRateTicks(it) }`，让刻度落在真实存在的面板挡位上。
+ *
+ * **量程 [maxValue] 必须由调用方钉死**，不要传自适应峰值——轴一浮动，
+ * 30fps 和 60fps 就会画成同一条曲线，图也就失去了意义。
  */
 @Composable
 fun LineChart(
@@ -298,39 +311,85 @@ fun LineChart(
     valueFormatter: (Float) -> String = { "%.0f".format(it) },
     /** 是否在顶部标注峰值。概览页的迷你折线不需要，数值由卡片头部承担 */
     showPeak: Boolean = true,
+    /** 是否画 Y 轴（刻度栏 + 网格线 + 标签）。概览页的小尺寸折线关掉 */
+    showYAxis: Boolean = true,
+    /** 刻度后缀单位，如 `FPS` / `%` / `℃` / `MHz` / `mW` / `ms` */
+    unit: String = "",
+    /** Y 轴刻度值的生成方式，默认按量程等分 5 档 */
+    ticks: (Float) -> List<Float> = { axisTicks(it, 5) },
 ) {
     val c = osColors()
     val safeMax = maxValue.coerceAtLeast(0.001f)
     val data = remember(values) { if (values.isEmpty()) listOf(0f) else values }
     val measurer = rememberTextMeasurer()
-    val labelStyle = TextStyle(color = c.textTertiary, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+    val labelStyle = TextStyle(color = c.textTertiary, fontSize = 9.sp, fontWeight = FontWeight.Medium)
     val density = LocalDensity.current
+    val tickValues = remember(safeMax, ticks) { ticks(safeMax) }
+    val tickLabels = remember(tickValues, valueFormatter, unit) {
+        tickValues.map { if (unit.isBlank()) valueFormatter(it) else "${valueFormatter(it)}$unit" }
+    }
+    // 刻度栏宽度按最长的标签算——不然 `800MHz` 会被 `0` 的宽度截掉，
+    // 而各图量程差异很大（温度 50、频率 800、功耗 3000），写死一个值必然有图吃亏
+    val axisWidthPx = remember(tickLabels, density) {
+        if (!showYAxis) 0f
+        else {
+            val w = tickLabels.maxOfOrNull { measurer.measure(it, labelStyle).size.width } ?: 0
+            with(density) { (w.toDp() + 6.dp).toPx() }
+        }
+    }
 
     Canvas(modifier = modifier.fillMaxWidth().height(height)) {
         val labelH = if (showPeak) with(density) { 14.dp.toPx() } else 0f
         val chartTop = labelH
         val chartBottom = size.height
         val chartH = (chartBottom - chartTop).coerceAtLeast(1f)
-        val stepX = if (data.size > 1) size.width / (data.size - 1) else size.width
+        val plotLeft = axisWidthPx
+        val plotW = (size.width - plotLeft).coerceAtLeast(1f)
+        val stepX = if (data.size > 1) plotW / (data.size - 1) else plotW
 
         fun yOf(v: Float): Float {
             val f = (v / safeMax).coerceIn(0f, 1f)
             return chartBottom - chartH * f
         }
 
+        // Y 轴：网格线 + 刻度标签
+        if (showYAxis) {
+            tickValues.forEachIndexed { i, t ->
+                val y = yOf(t)
+                val tm = measurer.measure(tickLabels[i], labelStyle)
+                // 最底一档（0）与基线重合，不重复画
+                if (t > 0f) {
+                    drawLine(
+                        color = c.hairline,
+                        start = Offset(plotLeft, y),
+                        end = Offset(size.width, y),
+                        strokeWidth = 1f,
+                    )
+                }
+                drawText(
+                    textLayoutResult = tm,
+                    topLeft = Offset(
+                        (plotLeft - with(density) { 4.dp.toPx() } - tm.size.width).coerceAtLeast(0f),
+                        (y - tm.size.height / 2f)
+                            .coerceIn(chartTop, (chartBottom - tm.size.height).coerceAtLeast(chartTop)),
+                    ),
+                )
+            }
+        }
+
         // 基线
         drawLine(
             color = c.hairline,
-            start = Offset(0f, chartBottom - 0.5f),
+            start = Offset(plotLeft, chartBottom - 0.5f),
             end = Offset(size.width, chartBottom - 0.5f),
             strokeWidth = 1f,
         )
 
         // 面积填充
         val area = Path().apply {
-            moveTo(0f, chartBottom)
-            data.forEachIndexed { i, v -> lineTo(stepX * i, yOf(v)) }
-            lineTo(stepX * (data.size - 1), chartBottom)
+            moveTo(plotLeft, chartBottom)
+            data.forEachIndexed { i, v -> lineTo(plotLeft + stepX * i, yOf(v)) }
+            lineTo(plotLeft + stepX * (data.size - 1), chartBottom)
             close()
         }
         drawPath(
@@ -345,7 +404,7 @@ fun LineChart(
         // 折线
         val line = Path().apply {
             data.forEachIndexed { i, v ->
-                val x = stepX * i
+                val x = plotLeft + stepX * i
                 val y = yOf(v)
                 if (i == 0) moveTo(x, y) else lineTo(x, y)
             }
@@ -367,11 +426,12 @@ fun LineChart(
             center = Offset(size.width, yOf(data.last())),
         )
 
-        // 顶部标注：只标峰值，当前值由卡片头部承担，避免同一数字出现两次
+        // 顶部标注：只标峰值，当前值由卡片头部承担，避免同一数字出现两次。
+        // 有 Y 轴时右移让位，否则会和最高刻度叠在一起
         if (showPeak) {
             val peak = data.maxOrNull() ?: 0f
             val pm = measurer.measure("峰值 " + valueFormatter(peak), labelStyle)
-            drawText(textLayoutResult = pm, topLeft = Offset(0f, 0f))
+            drawText(textLayoutResult = pm, topLeft = Offset(plotLeft, 0f))
         }
     }
 }
@@ -396,6 +456,11 @@ fun MetricChartCard(
     showAxis: Boolean = true,
     /** 时间轴左端文案；调用方按实际窗口长度传入 [axisSpanLabel] 的结果 */
     axisStartLabel: String = "最早",
+    /**
+     * Y 轴刻度值的生成方式。默认按量程等分 5 档；
+     * 帧率场景传 `{ frameRateTicks(it) }`，刻度落在真实面板挡位上。
+     */
+    yTicks: (Float) -> List<Float> = { axisTicks(it, 5) },
 ) {
     val c = osColors()
     val current = values.lastOrNull() ?: 0f
@@ -446,6 +511,8 @@ fun MetricChartCard(
             maxValue = maxValue,
             color = color,
             valueFormatter = valueFormatter,
+            unit = unit,
+            ticks = yTicks,
         )
         if (showAxis) {
             Spacer(Modifier.height(4.dp))
@@ -742,6 +809,9 @@ data class MultiSeries(
  *
  * 序列数建议不超过 5 条，再多颜色就分不清了；各序列的 `values` 长度应一致，
  * 否则短的那条会被拉伸到整幅宽度，时间轴对不齐。
+ *
+ * 多序列共用一根 Y 轴（各序列量纲一致才能画在一起，如「各应用 CPU 占用 %」），
+ * 因此 [unit] 放在图例里说明，刻度标签只出数值——否则 5 枚刻度各带一遍单位会很挤。
  */
 @Composable
 fun MultiLineChart(
@@ -749,28 +819,73 @@ fun MultiLineChart(
     maxValue: Float,
     modifier: Modifier = Modifier,
     height: Dp = 92.dp,
+    /** 是否画 Y 轴（刻度栏 + 网格线 + 数值标签） */
+    showYAxis: Boolean = true,
+    /** 各序列共用的单位，显示在图例标签后 */
+    unit: String = "",
 ) {
     val c = osColors()
     val safeMax = maxValue.coerceAtLeast(0.001f)
     val density = LocalDensity.current
+    val measurer = rememberTextMeasurer()
+    val labelStyle = TextStyle(color = c.textTertiary, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+    val tickValues = remember(safeMax) { axisTicks(safeMax, 5) }
+    val tickLabels = remember(tickValues) { tickValues.map { "%.0f".format(it) } }
+    val axisWidthPx = remember(tickLabels, density) {
+        if (!showYAxis) 0f
+        else {
+            val w = tickLabels.maxOfOrNull { measurer.measure(it, labelStyle).size.width } ?: 0
+            with(density) { (w.toDp() + 6.dp).toPx() }
+        }
+    }
 
     Column(modifier = modifier.fillMaxWidth()) {
         Canvas(Modifier.fillMaxWidth().height(height)) {
+            val chartTop = 0f
             val chartBottom = size.height
+            val chartH = (chartBottom - chartTop).coerceAtLeast(1f)
+            val plotLeft = axisWidthPx
+            val plotW = (size.width - plotLeft).coerceAtLeast(1f)
+
+            fun yOf(v: Float): Float = chartBottom - chartH * (v / safeMax).coerceIn(0f, 1f)
+
+            if (showYAxis) {
+                tickValues.forEachIndexed { i, t ->
+                    val y = yOf(t)
+                    val tm = measurer.measure(tickLabels[i], labelStyle)
+                    if (t > 0f) {
+                        drawLine(
+                            color = c.hairline,
+                            start = Offset(plotLeft, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = 1f,
+                        )
+                    }
+                    drawText(
+                        textLayoutResult = tm,
+                        topLeft = Offset(
+                            (plotLeft - with(density) { 4.dp.toPx() } - tm.size.width).coerceAtLeast(0f),
+                            (y - tm.size.height / 2f)
+                                .coerceIn(chartTop, (chartBottom - tm.size.height).coerceAtLeast(chartTop)),
+                        ),
+                    )
+                }
+            }
+
             drawLine(
                 color = c.hairline,
-                start = Offset(0f, chartBottom - 0.5f),
+                start = Offset(plotLeft, chartBottom - 0.5f),
                 end = Offset(size.width, chartBottom - 0.5f),
                 strokeWidth = 1f,
             )
             series.forEach { s ->
                 val data = s.values
                 if (data.isEmpty()) return@forEach
-                val stepX = if (data.size > 1) size.width / (data.size - 1) else size.width
+                val stepX = if (data.size > 1) plotW / (data.size - 1) else plotW
                 val path = Path().apply {
                     data.forEachIndexed { i, v ->
-                        val x = stepX * i
-                        val y = chartBottom - chartBottom * (v / safeMax).coerceIn(0f, 1f)
+                        val x = plotLeft + stepX * i
+                        val y = yOf(v)
                         if (i == 0) moveTo(x, y) else lineTo(x, y)
                     }
                 }
@@ -787,6 +902,11 @@ fun MultiLineChart(
         }
         if (series.isNotEmpty()) {
             Spacer(Modifier.height(7.dp))
+            // 多序列共用一根 Y 轴，单位只在图例里标一次，避免 5 枚刻度各带一遍单位
+            if (unit.isNotBlank()) {
+                Text(text = "纵轴单位：$unit", style = OsText.micro, color = c.textTertiary)
+                Spacer(Modifier.height(4.dp))
+            }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 series.chunked(2).forEach { row ->
                     Row(
@@ -969,4 +1089,407 @@ fun autoXMaxMs(durationMs: Long): Long {
     if (durationMs <= base) return base
     val step = 5 * 60_000L
     return ((durationMs / step) + 1) * step
+}
+
+/** [DualAxisChart] 的一条曲线：标签 + 颜色 + 数值序列 */
+data class AxisSeries(
+    val label: String,
+    val color: Color,
+    val values: List<Float>,
+)
+
+/**
+ * 双 Y 轴叠图：左轴固定帧率，右轴可切换（温度 / 负载 / 电量）。
+ *
+ * ## 为什么要双轴
+ *
+ * 帧率是 0~120 的量、温度是 30~50 的量、负载是 0~100 的量。强行放到同一根轴上，
+ * 温度曲线会被压成贴着底边的一条直线，完全看不出「温度上来了帧率就掉了」这种关联。
+ * 双轴让两条曲线各占满自己的量程，**关联关系才读得出来**——这正是性能分析的核心。
+ *
+ * ## 左轴量程：贴到数据实际达到的面板挡位
+ *
+ * 量程钉在 60 / 90 / 120 / 144 / 165 / 185 这些**面板真实刷新率**上，
+ * 「掉到一半」才在图上表现为掉到一半。
+ *
+ * 但**不是无脑向上取到 185**：早期实现每冲高一次就抬一档，120Hz 的机器
+ * 只要瞬时有 121 就会被画成 144、再有 145 就变 165，纵轴顶部全是空的。
+ * 现在由 [frameRateMax] 以面板上限封顶，120 面板就停在 120。
+ *
+ * 移植自 Scene5 Alpha 的 `FpsDataView`，但改用 Compose `Canvas` 纯绘制，
+ * 数据由调用方传入——不在绘制函数里查数据库。
+ */
+@Composable
+fun DualAxisChart(
+    left: AxisSeries,
+    right: AxisSeries?,
+    xMaxMs: Long,
+    modifier: Modifier = Modifier,
+    height: Dp = 168.dp,
+    leftUnit: String = "FPS",
+    rightUnit: String = "",
+    lowFpsThreshold: Float = 45f,
+    /**
+     * 面板标称刷新率上限，作为左轴的常驻参照（见 [frameRateMax]）。
+     * 为 0 时只用数据峰值定轴。传它才能让「还没跑满」也看得出来。
+     */
+    leftPanelMax: Float = 0f,
+    xLabel: (Long) -> String = { ms -> "%d:%02d".format(ms / 60_000, (ms / 1000) % 60) },
+) {
+    val c = osColors()
+    val measurer = rememberTextMeasurer()
+    val labelStyle = TextStyle(
+        color = c.textTertiary,
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Medium,
+    )
+    val density = LocalDensity.current
+
+    Canvas(modifier.fillMaxWidth().height(height)) {
+        val leftPad = with(density) { 30.dp.toPx() }
+        val rightPad = with(density) { 34.dp.toPx() }
+        val bottomPad = with(density) { 15.dp.toPx() }
+        val topPad = with(density) { 6.dp.toPx() }
+        val plotLeft = leftPad
+        val plotRight = size.width - rightPad
+        val plotTop = topPad
+        val plotBottom = size.height - bottomPad
+        val plotW = (plotRight - plotLeft).coerceAtLeast(1f)
+        val plotH = (plotBottom - plotTop).coerceAtLeast(1f)
+        val safeX = xMaxMs.coerceAtLeast(1L).toFloat()
+
+        // 左轴（帧率）：用与实时折线同一套规则 —— 面板上限封顶 + 峰值收窄。
+        // 两条曲线（历史 / 实时）必须用同一个函数，否则同一台机器在两处画出不同的纵轴。
+        val leftMax = frameRateMax(
+            observedPeak = left.values.filter { it >= 0f }.maxOrNull() ?: 0f,
+            panelMax = leftPanelMax,
+        )
+        // 右轴：温度给 30~60 的窄区间（否则曲线贴底），负载/电量给 0~100
+        val rightRange = rightRangeOf(right?.values)
+        val rightMax = rightRange.second
+        val rightMin = rightRange.first
+
+        fun xOfMs(ms: Long): Float = plotLeft + plotW * (ms / safeX).coerceIn(0f, 1f)
+        fun yLeft(v: Float): Float = plotBottom - plotH * (v / leftMax).coerceIn(0f, 1f)
+        fun yRight(v: Float): Float =
+            plotBottom - plotH * ((v - rightMin) / (rightMax - rightMin).coerceAtLeast(0.001f))
+                .coerceIn(0f, 1f)
+
+        // ---- 网格：左侧帧率挡位刻度，虚线 ----
+        val dash = PathEffect.dashPathEffect(
+            floatArrayOf(with(density) { 3.dp.toPx() }, with(density) { 3.dp.toPx() }),
+        )
+        // 刻度标在真实面板挡位上（60/90/120/…），而不是把量程等分 5 份。
+        // 等分出来的 33/66/99 对不上任何真实刷新率，用户没法拿它和屏幕对上号。
+        val leftTicks = frameRateTicks(leftMax).filter { it > 0f }
+        leftTicks.forEach { v ->
+            val y = plotBottom - plotH * (v / leftMax).coerceIn(0f, 1f)
+            drawLine(
+                color = c.hairline,
+                start = Offset(plotLeft, y),
+                end = Offset(plotRight, y),
+                strokeWidth = 1f,
+                pathEffect = dash,
+            )
+            val tm = measurer.measure("%.0f".format(v), labelStyle)
+            drawText(
+                textLayoutResult = tm,
+                topLeft = Offset(
+                    (plotLeft - tm.size.width - with(density) { 4.dp.toPx() }).coerceAtLeast(0f),
+                    (y - tm.size.height / 2f)
+                        .coerceIn(plotTop, (plotBottom - tm.size.height).coerceAtLeast(plotTop)),
+                ),
+            )
+        }
+
+        // ---- 右侧刻度：每条曲线自己的量程 ----
+        right?.let {
+            repeat(5) { i ->
+                val frac = i / 4f
+                val v = rightMin + (rightMax - rightMin) * frac
+                val tm = measurer.measure("%.0f".format(v), labelStyle)
+                drawText(
+                    textLayoutResult = tm,
+                    topLeft = Offset(
+                        plotRight + with(density) { 4.dp.toPx() },
+                        (plotBottom - plotH * frac) - tm.size.height / 2f,
+                    ),
+                )
+            }
+        }
+
+        // ---- 低帧参考线：一眼看出跌破阈值的时段 ----
+        if (left.values.any { it > 0f } && lowFpsThreshold in 0f..leftMax) {
+            val y = yLeft(lowFpsThreshold)
+            drawLine(
+                color = c.textTertiary.copy(alpha = 0.45f),
+                start = Offset(plotLeft, y),
+                end = Offset(plotRight, y),
+                strokeWidth = with(density) { 1.dp.toPx() },
+                pathEffect = PathEffect.dashPathEffect(
+                    floatArrayOf(with(density) { 5.dp.toPx() }, with(density) { 5.dp.toPx() }),
+                ),
+            )
+        }
+
+        // ---- X 轴刻度 ----
+        repeat(3) { i ->
+            val ms = xMaxMs * i / 2
+            val tm = measurer.measure(xLabel(ms), labelStyle)
+            val tx = (xOfMs(ms) - tm.size.width / 2f)
+                .coerceIn(plotLeft, (plotRight - tm.size.width).coerceAtLeast(plotLeft))
+            drawText(
+                textLayoutResult = tm,
+                topLeft = Offset(tx, plotBottom + with(density) { 2.dp.toPx() }),
+            )
+        }
+
+        // ---- 曲线 ----
+        // 右轴先画（在下层），左轴帧率后画（在上层）——帧率是主角
+        right?.let { s ->
+            drawSeries(
+                values = s.values,
+                color = s.color,
+                count = s.values.size,
+                xOf = { i -> plotLeft + plotW * (i.toFloat() / (s.values.size - 1).coerceAtLeast(1)) },
+                yOf = ::yRight,
+                densityScale = with(density) { 1.6.dp.toPx() },
+            )
+        }
+        drawSeries(
+            values = left.values,
+            color = left.color,
+            count = left.values.size,
+            xOf = { i -> plotLeft + plotW * (i.toFloat() / (left.values.size - 1).coerceAtLeast(1)) },
+            yOf = ::yLeft,
+            densityScale = with(density) { 2.dp.toPx() },
+        )
+    }
+
+    // ---- 图例 ----
+    Spacer(Modifier.height(7.dp))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        LegendChip(left.label, left.color, leftUnit)
+        right?.let { LegendChip(it.label, it.color, rightUnit) }
+    }
+}
+
+@Composable
+private fun LegendChip(label: String, color: Color, unit: String) {
+    val c = osColors()
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Canvas(Modifier.size(7.dp)) { drawCircle(color) }
+        Spacer(Modifier.width(5.dp))
+        Text(
+            text = if (unit.isBlank()) label else "$label ($unit)",
+            style = OsText.micro,
+            color = c.textSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/** 画一条折线（含渐隐填充），X 按等距铺满 */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSeries(
+    values: List<Float>,
+    color: Color,
+    count: Int,
+    xOf: (Int) -> Float,
+    yOf: (Float) -> Float,
+    densityScale: Float,
+) {
+    if (count < 2) return
+    val path = Path()
+    var started = false
+    values.forEachIndexed { i, v ->
+        if (v < 0f) return@forEachIndexed
+        val x = xOf(i)
+        val y = yOf(v)
+        if (!started) {
+            path.moveTo(x, y)
+            started = true
+        } else {
+            path.lineTo(x, y)
+        }
+    }
+    if (!started) return
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(width = densityScale, join = StrokeJoin.Round, cap = StrokeCap.Round),
+    )
+    // 末端标记
+    val lastIdx = values.indexOfLast { it >= 0f }
+    if (lastIdx >= 0) {
+        drawCircle(color = color, radius = densityScale * 1.6f, center = Offset(xOf(lastIdx), yOf(values[lastIdx])))
+    }
+}
+
+/**
+ * 帧率轴顶：把峰值 [peak] 贴到真实面板挡位上。
+ *
+ * 单独抽出来是因为有两类调用方：实时折线手上只有「当前窗口峰值」这个数，
+ * 拿不到完整序列，但需要**同一套**挡位规则，否则实时卡的轴顶会和历史图对不上。
+ *
+ * 注意本函数**只做贴档、不做封顶**。「不超过面板上限」由 [frameRateMax] 负责，
+ * 两者分工不同：本函数回答「这个数落在哪一档」，上层回答「该用哪一档」。
+ */
+fun frameRateAxisMax(peak: Float): Float {
+    val p = peak.coerceAtLeast(0f)
+    // 峰值贴到的第一枚不小于它的挡位；留 0.5 的容差吸收浮点抖动，
+    // 否则 119.999 会贴到 120，而 120.0001 又要贴到 144 —— 轴顶在临界点跳变
+    val snapped = PANEL_REFRESH_LADDER.firstOrNull { p <= it + 0.5f }
+    if (snapped != null) return snapped
+    // 超过 185：按 10 的倍数上取整（187 → 190）
+    return kotlin.math.ceil((p + 0.5f) / 10f) * 10f
+}
+
+/**
+ * 面板刷新率挡位，从低到高。
+ *
+ * 这是用户唯一能和自己屏幕对上号的刻度集合 —— 等分刻度（165/5 = 33, 66, 99…）
+ * 在帧率语境下读不出含义。
+ */
+private val PANEL_REFRESH_LADDER = listOf(60f, 90f, 120f, 144f, 165f, 185f)
+
+/**
+ * 把 `[0, axisMax]` 切成 [count] 档用于画 Y 轴刻度。
+ *
+ * 两个刻意的设计：
+ *
+ * 1. **返回原始浮点值，不是四舍五入后的整数**。`axisMax = 165`、`count = 5` 时
+ *    档位是 0 / 41.25 / 82.5 / 123.75 / 165，标签会被四舍五入成 0 / 41 / 83 / 124 / 165，
+ *    但曲线的 y 坐标必须用**原始值**去算——否则刻度线和曲线会错位。这里只负责出值，
+ *    格式化交给调用方。
+ * 2. **帧率量程改用面板挡位**（见 [frameRateTicks]），因为 165/5 = 33 这种等差档位
+ *    在帧率语境下读不出含义；面板挡位是用户唯一能对上号的刻度。
+ */
+fun axisTicks(axisMax: Float, count: Int = 5): List<Float> {
+    val n = count.coerceAtLeast(2)
+    val max = axisMax.coerceAtLeast(0.001f)
+    return List(n) { i -> max * i / (n - 1) }
+}
+
+/**
+ * 帧率轴的取整档位：把当前量程 [axisMax] 按面板刷新率切档。
+ *
+ * 从高到低取第一枚 `<= axisMax` 的挡位，再兜底 0，得到形如
+ * `165 → [0, 60, 90, 120, 144, 165]`、`120 → [0, 60, 90, 120]`、`60 → [0, 60]` 的刻度。
+ *
+ * 为什么不用等分：165Hz 面板上等分出 33/66/99/132 四枚刻度，用户没法把它们
+ * 和自己屏幕上有哪些挡位对上；60/90/120/144 才是真实存在的刷新率，看一眼就知道
+ * 「曲线贴着 120 那条线」意味着什么。
+ *
+ * **轴顶那一枚要标出来**（用 `<=` 而不是 `<`）：[frameRateAxisMax] 产出的轴顶
+ * 本身就是挡位，如果刻度只取到下一枚（120 → 显示 90 封顶），顶部留白会被误读成
+ * 「还有一段没画」。标出轴顶这枚，用户才能确认「这台机器的上限就是 120」。
+ * 非挡位轴顶（>185 的取整值）不会命中任何刻度，此时的留白由 [axisTicks] 兜底情形处理。
+ */
+fun frameRateTicks(axisMax: Float): List<Float> {
+    val ticks = PANEL_REFRESH_LADDER.filter { it <= axisMax + 0.5f }
+    return listOf(0f) + ticks
+}
+
+/**
+ * 右轴量程。
+ *
+ * 温度必须走窄区间（30~60），否则 0~100 的量程会把 38~45 的波动压成一条直线，
+ * 「温度上来了」这个关键现象就看不见了。
+ */
+fun rightRangeOf(values: List<Float>?): Pair<Float, Float> {
+    val vals = values?.filter { it >= 0f } ?: emptyList()
+    if (vals.isEmpty()) return 0f to 100f
+    val max = vals.max()
+    val min = vals.min()
+    return when {
+        // 温度：夹到 30~60，并对实际范围留边
+        max <= 70f -> (min - 3f).coerceAtLeast(20f) to (max + 3f).coerceAtMost(70f)
+        // 其余（负载 / 电量 / 频率）按 0~100 或实际上限
+        else -> 0f to max.coerceAtLeast(100f)
+    }
+}
+
+/**
+ * 当前屏幕的面板刷新率上限（Hz）。
+ *
+ * 取的是**同分辨率模式里最高的那个刷新率**，与 MainActivity 请求
+ * `preferredDisplayModeId` 的挑法一致 —— 这样图上的「面板上限」和系统实际
+ * 被要求跑的模式对得上。
+ *
+ * 用途：帧率折线的常驻参照。峰值还没跑到上限时，纵轴也至少到面板上限，
+ * 用户才能看出「离满帧还差多少」；一旦峰值越过上限（有些机型会超发），
+ * 轴顶再跟着数据走。
+ *
+ * 读不到时返回 0，调用方按「无参照」处理。
+ */
+@Composable
+fun panelRefreshHz(): Float {
+    val context = LocalContext.current
+    return remember(context) {
+        runCatching {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                ?: return@runCatching 0f
+            @Suppress("DEPRECATION")
+            val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.display
+            } else {
+                wm.defaultDisplay
+            } ?: return@runCatching 0f
+            val modes = display.supportedModes
+            if (modes.isEmpty()) return@runCatching 0f
+            val w = display.mode.physicalWidth
+            val h = display.mode.physicalHeight
+            modes.filter { it.physicalWidth == w && it.physicalHeight == h }
+                .maxOfOrNull { it.refreshRate }
+                ?.coerceIn(0f, 240f)
+                ?: 0f
+        }.getOrDefault(0f)
+    }
+}
+
+/**
+ * 帧率折线的纵轴上限：**以面板上限封顶**，并在其内跟着数据峰值走。
+ *
+ * ## 为什么要用面板上限封顶（这是「Y 轴太短」的正解）
+ *
+ * 先前的实现用 `autoMax(floor = 60)`，它在 120 面板上会算出轴顶 **200**
+ * （`base ≤ 1000 → step = 100 → ceil(120/100)*100`），165 的机器同样画到 200 ——
+ * 曲线被压在下面 60% 里，正是用户反馈的「Y 轴太短」。
+ *
+ * 换成本函数后：
+ *
+ * - 120Hz 面板、峰值 118~120 → 轴顶 **120**；
+ * - 165Hz 面板、峰值 160~165 → 轴顶 **165**；
+ * - 60Hz 面板、峰值 58 → 轴顶 **60**。
+ *
+ * **瞬时超发不外扩**：有些机型会短暂报到面板之上（如 120 屏出现 121），
+ * 若按峰值贴档就会跳到 144 并让后续每次都画 144。既然屏幕物理上不可能长期
+ * 超过面板，超出的部分按封顶处理即可 —— 曲线会在顶边被裁平，这比整个纵轴
+ * 被撑高一档更有信息量（「跑满了」一眼可见）。
+ *
+ * @param observedPeak 当前窗口的帧率峰值
+ * @param panelMax 面板标称上限（取自 display.refreshRate）。为 0 或不可读时
+ *   退化为「纯按峰值贴档」，此时仍不会超过峰值所在的那一档。
+ */
+fun frameRateMax(observedPeak: Float, panelMax: Float): Float {
+    val panel = if (panelMax.isFinite() && panelMax in 1f..240f) panelMax else 0f
+    val peak = observedPeak.coerceAtLeast(0f)
+    // 面板可读：轴顶钉在面板挡位上，峰值只用于在面板内往下收窄
+    if (panel > 0f) {
+        val panelSnapped = frameRateAxisMax(panel)
+        // 峰值明显低于面板（例如 120 面板只跑 60）时，收窄到峰值那一档，
+        // 让波动占满整个高度；否则维持面板上限，保留「离满帧还差多少」的参照。
+        // 阈值用 0.75：低到只剩四分之三时才收窄，避免日常小幅波动导致轴顶反复跳变。
+        val peakSnapped = frameRateAxisMax(peak)
+        return if (peakSnapped < panelSnapped && peak < panelSnapped * 0.75f) {
+            peakSnapped
+        } else {
+            panelSnapped
+        }
+    }
+    return frameRateAxisMax(peak)
 }

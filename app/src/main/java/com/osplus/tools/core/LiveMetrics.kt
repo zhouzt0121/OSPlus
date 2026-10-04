@@ -36,6 +36,14 @@ object LiveMetrics {
         val batteryTempC: Float? = null,
         /** 充电功率 W；0 表示未接充电器或不可读 */
         val chargeW: Float = 0f,
+        /**
+         * **系统级**帧率（显示控制器实测）；0 或负数表示不可读。
+         *
+         * 放在这里是为了让**悬浮窗 / 前台通知**也能拿到：它们跑在 Service 里，
+         * 与 ViewModel 不是同一套状态，只能靠这个共享快照传递。
+         * 界面侧的帧率显示以系统级优先，见 `FpsScreen` 的 `effectiveFps`。
+         */
+        val sysFps: Float = -1f,
     ) {
         /** 内存占用百分比 0~100；由可用 / 全部推导，避免各显示端各算一遍 */
         val memUsedPercent: Float
@@ -67,6 +75,7 @@ object LiveMetrics {
         powerMw: Float = _snapshot.value.powerMw,
         batteryTempC: Float? = _snapshot.value.batteryTempC,
         chargeW: Float = _snapshot.value.chargeW,
+        sysFps: Float = _snapshot.value.sysFps,
     ) {
         _cpuLoad.value = cpuLoad
         _gpuLoad.value = gpuLoad
@@ -80,6 +89,7 @@ object LiveMetrics {
             powerMw = powerMw,
             batteryTempC = batteryTempC,
             chargeW = chargeW,
+            sysFps = sysFps,
         )
     }
 }

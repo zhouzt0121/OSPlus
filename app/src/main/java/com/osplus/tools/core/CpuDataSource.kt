@@ -123,6 +123,31 @@ object CpuDataSource {
                 val v = Shell.readNode(p, root = true)?.trim().orEmpty()
                 if (v.isNotEmpty()) result[p] = v
             }
+            // 全部 thermal zone 的 type + temp，用于按语义挑出真正的 CPU 结温。
+            //
+            // 合并成**一条** shell 命令遍历：sysfs 的 thermal 目录不可列举
+            // （File.listFiles() 被 SELinux 拒绝），只能让 shell 用 glob 展开。
+            // 输出格式 `type|temp`，每行一个 zone；zoneN 编号由路径顺序推出。
+            val thermalScript = buildString {
+                append("for z in /sys/class/thermal/thermal_zone*; do ")
+                append("n=\$(basename \$z); ")
+                append("t=\$(cat \$z/type 2>/dev/null); ")
+                append("v=\$(cat \$z/temp 2>/dev/null); ")
+                append("[ -n \"\$v\" ] && echo \"\$n|\$t|\$v\"; ")
+                append("done")
+            }
+            val thermalOut = Shell.run(thermalScript, root = true).stdout
+            thermalOut.lineSequence().forEach { line ->
+                val parts = line.trim().split('|')
+                if (parts.size < 3) return@forEach
+                val zone = parts[0].trim()
+                if (!zone.startsWith("thermal_zone")) return@forEach
+                val type = parts[1].trim()
+                val temp = parts[2].trim()
+                if (temp.isEmpty()) return@forEach
+                result["/sys/class/thermal/$zone/type"] = type
+                result["/sys/class/thermal/$zone/temp"] = temp
+            }
             result
         }
 
@@ -276,19 +301,101 @@ object CpuDataSource {
 
 
     /**
-     * 读取 CPU 温度。
+     * 读取 CPU / SoC 温度。
      *
-     * 单位判定不能只看数值大小：不同平台差异很大——
-     *  - 高通/多数内核：millidegree（如 `45000` = 45℃）
-     *  - 联发科部分节点：直接输出摄氏度（如 `45`）
-     *  - hwmon：有些输出千分之一度，有些是温度值本身
+     * ## 为什么不能只看 thermal_zone0
      *
-     * 这里改成按**节点路径语义**判断，而不是猜数值量级：
-     * `thermal_zoneN/temp` 按规范是 millidegree，直接除以 1000；
-     * `hwmon/…/tempN_input` 同样是 millidegree。
-     * 若除完落在合理区间（-20~150）则采用，否则回退原值。
+     * `thermal_zoneN` 的编号与「哪个传感器」**没有固定关系**，由内核设备树
+     * 注册顺序决定。真机实测（SM8750）：
+     *
+     * | zone | type | 温度 |
+     * |---|---|---|
+     * | thermal_zone0 | `aoss-0`（Always-On 子系统） | 40.9 ℃ |
+     * | thermal_zone1 | `cpu-0-0-0` | 44.0 ℃ |
+     * | thermal_zone23 | `cpuss-0-0` | 44.4 ℃ |
+     * | thermal_zone33 | `gpuss-0` | 40.9 ℃ |
+     *
+     * 也就是说 zone0 是**低功耗常开协处理器域**，比真正的 CPU 结温低 3~4 ℃。
+     * 把它当 SoC 温度展示，数值偏乐观、且语义不符（之前界面上写的就是
+     * 「真机上是 aoss-0，SoC 结温」，这个判断是错的）。
+     *
+     * ## 选择策略
+     *
+     * 在**同一条 root 命令**里把所有 `thermal_zone` 的 type 与 temp 都读出来，
+     * 再按 [thermalTypePriority] 给 type 打分，取最高分的那个 zone。
+     * 这样跨机型自适应：联发科常见的 `cpu`/`soc` 命名、高通的 `cpuss`/`cpu-N-M-K`
+     * 命名都能命中；一个都没有时才退回 zone0 原值。
+     *
+     * @param zones 由 [readThermalZones] 采回的 (type, 摄氏度) 列表
+     */
+    private fun pickCpuTemperature(zones: List<Pair<String, Float>>): Float? {
+        if (zones.isEmpty()) return null
+        return zones
+            .map { (type, temp) -> thermalTypePriority(type) to temp }
+            .filter { it.first > 0 }
+            .maxByOrNull { it.first }
+            ?.second
+    }
+
+    /**
+     * 给 thermal zone 的 `type` 打优先级分；<=0 表示「不是 CPU/SoC 温度，不考虑」。
+     *
+     * 分数越高越贴近「整颗 SoC 的结温」：
+     * - 100：整个 CPU 子系统（`cpuss-*` / `soc` / `soc_thermal`）
+     * - 80：单个 CPU 大核（`cpu-0-3-0` 这类，簇号越大通常越靠大核）
+     * - 60：CPU 小核 / 通用 cpu 命名
+     * - 40：GPU 结温（`gpuss` / `gpu`）——没有 CPU 温度时的次优解
+     * - 0：其它（aoss / vbat / bcl / camera / modem 等，明确排除）
+     *
+     * 排除项要显式列出：`aoss`（常开域）、`vbat`/`bcl`（电池相关）、
+     * `camera`/`video`/`mdmss`（外设），这些都不是 CPU 温度，混进来会让读数偏低。
+     */
+    private fun thermalTypePriority(type: String): Int {
+        val t = type.lowercase()
+        // 明确排除的非 CPU 传感器
+        if (t.startsWith("aoss") || t.contains("vbat") || t.contains("bcl") ||
+            t.startsWith("camera") || t.startsWith("video") || t.startsWith("mdmss") ||
+            t.startsWith("nsphvx") || t.startsWith("pm")
+        ) return 0
+        return when {
+            // cpuss-0-0 / soc / soc_thermal —— 整颗 CPU 子系统
+            t.startsWith("cpuss") -> 100
+            t == "soc" || t.startsWith("soc_") || t.contains("soc") -> 95
+            // cpu-0-3-0 形式：第 3 段是簇号，越大越是性能核，取更大簇号者
+            t.startsWith("cpu-") -> {
+                val cluster = t.removePrefix("cpu-").split('-').getOrNull(1)?.toIntOrNull() ?: 0
+                60 + cluster * 5   // 簇 0→60，簇 1→65 …（封顶 80）
+            }
+            t == "cpu" || t.startsWith("cpu_") -> 60
+            // GPU 结温，作为兜底
+            t.startsWith("gpuss") || t == "gpu" || t.startsWith("gpu-") -> 40
+            else -> 0
+        }
+    }
+
+    /**
+     * 读取温度。
+     *
+     * 优先走 [readThermalZones] 的语义选择；拿不到任何 zone 时退回
+     * `thermal_zone0` + `hwmon`（部分内核不导出 type 节点）。
      */
     private fun readTemperature(nodes: Map<String, String>): Float? {
+        // 语义选择路径的输入由 readNodes() 一并采回，键形如
+        // "/sys/class/thermal/thermal_zoneN/type" -> "cpuss-0-0"
+        val zones = nodes.entries
+            .mapNotNull { (path, type) ->
+                val m = Regex("""/sys/class/thermal/(thermal_zone\d+)/type$""").find(path)
+                    ?: return@mapNotNull null
+                val tempRaw = nodes["/sys/class/thermal/${m.groupValues[1]}/temp"] ?: return@mapNotNull null
+                val temp = tempRaw.toFloatOrNull() ?: return@mapNotNull null
+                if (temp <= 0f) return@mapNotNull null
+                val scaled = if (temp > 1000f) temp / 1000f else temp
+                if (scaled !in -20f..150f) return@mapNotNull null
+                type.trim() to scaled
+            }
+        pickCpuTemperature(zones)?.let { return it }
+
+        // 兜底：老路径（内核未导出 type，或 zones 为空）
         val candidates = listOf(
             "/sys/class/thermal/thermal_zone0/temp",
             "/sys/class/hwmon/hwmon0/temp1_input",

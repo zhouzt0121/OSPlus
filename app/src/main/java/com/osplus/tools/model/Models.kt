@@ -110,7 +110,18 @@ data class FpsSample(
  */
 data class FpsRecord(
     val timeMs: Long = 0L,
+    /** 帧率（**有效值**：系统级优先，读不到才退回 [fpsApp]） */
     val fps: Float = 0f,
+    /** 本应用自身的帧率（Choreographer）。保留用于对照排查，见 [MetricSample.fpsApp] */
+    val fpsApp: Float = 0f,
+    /**
+     * 同期读取的**系统级**帧率（整机显示控制器实测）。
+     *
+     * 与 [fps] 的本质区别：[fps] 来自本应用自己的 Choreographer，
+     * 只反映本应用的渲染节奏；本字段反映**屏幕上真实发生的帧率**，
+     * 切到别的应用后依然有效。读取不到时保持 -1。
+     */
+    val fpsSys: Float = -1f,
     val jank: Int = 0,
     val bigJank: Int = 0,
     val avgFrameMs: Float = 0f,
@@ -131,6 +142,7 @@ data class FpsRecord(
         val sb = StringBuilder()
         sb.append(timeMs).append(',')
         sb.append("%.1f".format(fps)).append(',')
+        sb.append(if (fpsSys > 0f) "%.1f".format(fpsSys) else "").append(',')
         sb.append(jank).append(',')
         sb.append(bigJank).append(',')
         sb.append("%.2f".format(avgFrameMs)).append(',')
@@ -155,7 +167,7 @@ data class FpsRecord(
         /** CSV 表头，列顺序必须与 [toCsvRow] 一致 */
         fun csvHeader(coreCount: Int): String {
             val sb = StringBuilder()
-            sb.append("timestamp_ms,fps,jank,big_jank,avg_frame_ms,max_frame_ms,total_frames,cpu_load,")
+            sb.append("timestamp_ms,fps,fps_sys,jank,big_jank,avg_frame_ms,max_frame_ms,total_frames,cpu_load,")
             repeat(coreCount) { sb.append("core${it}_load,") }
             repeat(coreCount) { sb.append("core${it}_freq_khz,") }
             sb.append("gpu_mhz,gpu_load,mem_percent,power_mw,battery_temp_c")
@@ -185,8 +197,17 @@ data class MetricSample(    /** 采样时刻（System.currentTimeMillis） */
     val gpuLoad: Int = -1,
     /** 整机功耗 mW，正值，不可读时为 0 */
     val powerMw: Float = 0f,
-    /** 实时帧率 */
+    /** 实时帧率（**有效值**：系统级优先，见 [fpsApp] 的说明） */
     val fps: Float = 0f,
+    /**
+     * 本应用自身的帧率（Choreographer 回调节奏）。
+     *
+     * 与 [fps] 的分工：**[fps] 是「屏幕上真实发生的事」，本字段是「本应用自己做得多好」**。
+     * [fps] 在有系统级数据（显示控制器实测）时取系统级值，读不到才退回本字段。
+     * 两者都保留，是为了排查时能对照——比如系统帧率正常而本应用帧率偏低，
+     * 问题就在本应用的渲染，而不是设备整体。
+     */
+    val fpsApp: Float = 0f,
     /** 电池温度摄氏度 */
     val batteryTempC: Float? = null,
 ) {
@@ -294,4 +315,26 @@ fun formatSpan(ms: Long): String {
         m > 0 -> "${m}m${"%02d".format(s)}s"
         else -> "${s}s"
     }
+}
+
+/**
+ * 一次帧率记录会话。
+ *
+ * 会话以「开始记录」为界划分：用户在游戏里点开始、玩完点结束，就得到一条会话。
+ * [timeEnd] 在会话结束时写入（-1 表示仍在进行中，或进程被杀未来得及收尾）。
+ */
+data class FpsSession(
+    val id: Long = 0L,
+    /** 会话开始时处于前台的包名，未知时为 null */
+    val packageName: String? = null,
+    /** 展示用的应用名，由 UI 层解析后回填 */
+    val label: String = "",
+    val timeBegin: Long = -1L,
+    /** 结束时刻；-1 表示未正常结束 */
+    val timeEnd: Long = -1L,
+    val sampleCount: Int = 0,
+) {
+    /** 会话持续时间；未结束时返回 0 */
+    val durationMs: Long
+        get() = if (timeBegin > 0 && timeEnd > timeBegin) timeEnd - timeBegin else 0L
 }

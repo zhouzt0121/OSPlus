@@ -128,7 +128,7 @@ object Preferences {
     /**
      * 用户显式选择的提权模式名（[PrivilegeMode.name]）。
      *
-     * null 表示「用户没选过」，由 [PrivilegeManager] 按 root > Shizuku 顺序自动挑。
+     * null 表示「用户没选过」，由 [PrivilegeManager] 按可用性自动挑。
      * 存名字而不是序号：枚举顺序将来可能调整，序号会悄悄错位。
      */
     fun privilegeMode(context: Context): String? =

@@ -121,4 +121,38 @@ object ProcessDataSource {
     /** 按包名强制停止应用 */
     suspend fun forceStop(pkg: String): Boolean =
         Shell.run("am force-stop $pkg", root = true).success
+
+    /**
+     * 读取当前处于前台的包名。
+     *
+     * 走两条路，按可靠性排序：
+     *
+     * 1. `dumpsys activity activities` 里的 `topResumedActivity` / `mResumedActivity`
+     *    —— Android 12+ 起应用 uid 直接调用 `getRunningTasks` 已被限制，但
+     *    **shell 身份读 dumpsys 不受影响**，这正是 OSPlus 三通道提权的价值所在。
+     * 2. 退化到 `dumpsys window` 里的 `mCurrentFocus`，从 `com.foo/com.foo.MainActivity`
+     *    里切出包名。
+     *
+     * 都读不到时返回 null（调用方应按「未知应用」处理，不要中断记录）。
+     */
+    suspend fun foregroundPackage(context: Context): String? {
+        runCatching {
+            val out = Shell.run(
+                "dumpsys activity activities 2>/dev/null | grep -m1 -E 'topResumedActivity|mResumedActivity'",
+                root = true,
+            ).stdout
+            PKG_IN_ACTIVITY.find(out)?.groupValues?.getOrNull(1)
+        }.getOrNull()?.let { if (it.isNotBlank()) return it }
+
+        return runCatching {
+            val out = Shell.run(
+                "dumpsys window 2>/dev/null | grep -m1 -E 'mCurrentFocus|mFocusedApp'",
+                root = true,
+            ).stdout
+            PKG_IN_FOCUS.find(out)?.groupValues?.getOrNull(1)
+        }.getOrNull()?.takeIf { it.isNotBlank() && it != "null" }
+    }
+
+    private val PKG_IN_ACTIVITY = Regex("([a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z0-9_]+)+)/[^\\s}]+")
+    private val PKG_IN_FOCUS = Regex("([a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z0-9_]+)+)/[^\\s}]+")
 }

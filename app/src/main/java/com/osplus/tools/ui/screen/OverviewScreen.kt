@@ -28,6 +28,8 @@ import com.osplus.tools.ui.components.HealthLevel
 import com.osplus.tools.ui.components.LineChart
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.OsMetricRing
+import com.osplus.tools.ui.components.LiquidNavTabs
+import com.osplus.tools.ui.components.UsageBar
 import com.osplus.tools.ui.components.SectionCard
 import com.osplus.tools.ui.components.SpecGrid
 import com.osplus.tools.ui.components.axisSpanLabel
@@ -126,8 +128,8 @@ fun OverviewScreen(
         battery.plugged.contains("AC") || battery.plugged.contains("无线")
 
     val health = evaluateHealth(
-        // 传「是否有提权通道」而不是「是否有 root」：ADB / Shizuku 同样是
-        // 可用状态，不该被判成异常
+        // 传「是否有提权通道」而不是「是否有 root」：能力表是可用性的真值来源，
+        // 不该在页面里再判一次 root 名字
         privilegeAvailable = capabilities.available,
         socTempC = socTempC,
         batteryTempC = batteryTempC,
@@ -289,7 +291,12 @@ fun OverviewScreen(
                             "${fmtGb(mem.swapUsedKb)} / ${fmtGb(mem.swapTotalKb)}"
                         } else "未启用",
                         "ZRAM" to if (mem.zramTotalKb > 0) {
-                            "${fmtGb(mem.zramUsedKb)} / ${fmtGb(mem.zramTotalKb)}"
+                            // 「已用」优先用 mem_used_total（压缩后实占内存）；
+                            // 部分内核没有该节点（真机 SM8750 就是），退回 orig_data_size
+                            // （压缩前原始数据量），语义上仍是「已换出到 zram 的数据量」，
+                            // 比显示 `-` 有用。
+                            val usedKb = mem.zramUsedKb.takeIf { it > 0L } ?: mem.zramOrigKb
+                            "${fmtGb(usedKb)} / ${fmtGb(mem.zramTotalKb)}"
                         } else "未启用",
                     )
                 )
@@ -306,6 +313,158 @@ fun OverviewScreen(
                 )
             }
         }
+
+        // ---------------- 系统负载 ----------------
+        // 这些指标（负载 / 网络 / IO 压力 / 磁盘）此前已在 SystemExtrasDataSource
+        // 里实现但没有界面消费，属于「有能力没出口」。
+        //
+        // 默认关闭：它们要多一条 shell 命令，只看 CPU / 内存 / 功耗的用户
+        // 不该为此付每秒一次的往返开销。开关状态记在页内而不是持久化——
+        // 它是「本次想看」的临时意图，不是长期偏好。
+        item {
+            SystemExtrasCard(vm)
+        }
+    }
+}
+
+/**
+ * 系统负载卡。
+ *
+ * 四项指标压在一张卡里而不是各占一张：
+ *
+ * - **负载**必须在同一张卡里看。「1 分钟高、15 分钟正常」是突发，
+ *   三个值分三张卡就丢了这层对照关系。
+ * - **网络与磁盘**天然成对（都在回答「谁在搬运数据」），
+ *   分开会让人以为是两类无关的信息。
+ * - **IO 压力**是解释「磁盘很忙但网速为零」的关键——它和磁盘放在一起，
+ *   用户才能自己看出「是本地存储瓶颈而不是网络问题」。
+ *
+ * 不可读时显示 `--` 而不是 0：0 是「确实没有流量」，
+ * `--` 是「读不到」，两者对排障的意义完全相反。
+ */
+@Composable
+private fun SystemExtrasCard(vm: DeviceViewModel) {
+    val c = osColors()
+    val extras by vm.extras.collectAsStateWithLifecycle()
+    val enabled by vm.extrasEnabled.collectAsStateWithLifecycle()
+    val caps by vm.capabilities.collectAsStateWithLifecycle()
+
+    SectionCard {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "系统负载",
+                style = OsText.value,
+                color = c.textPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = if (enabled) "已开启" else "未开启",
+                style = OsText.micro,
+                color = c.textTertiary,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "读取 /proc/loadavg、/proc/net/dev、/proc/pressure/io、/proc/diskstats。" +
+                "这些节点应用身份读不到，需要提权通道；开启后每秒多一条命令。",
+            style = OsText.micro,
+            color = c.textTertiary,
+        )
+        Spacer(Modifier.height(10.dp))
+        LiquidNavTabs(
+            items = listOf(if (enabled) "关闭采集" else "开启采集"),
+            selectedIndex = -1,
+            enabled = caps.available || enabled,
+            onSelect = { vm.setExtrasEnabled(!enabled) },
+        )
+
+        if (enabled) {
+            Spacer(Modifier.height(14.dp))
+            if (!extras.anyAvailable) {
+                NoticeBanner(
+                    text = "尚未采到数据。首次采样没有差分基准，速率类指标要等第二个采样点；" +
+                        "若持续为空，请确认提权通道可用。",
+                    accent = ChartColors.cpu,
+                )
+                Spacer(Modifier.height(12.dp))
+            }
+
+            CardSectionLabel("平均负载")
+            Spacer(Modifier.height(6.dp))
+            SpecGrid(
+                listOf(
+                    "1 分钟" to fmtLoad(extras.load1),
+                    "5 分钟" to fmtLoad(extras.load5),
+                    "15 分钟" to fmtLoad(extras.load15),
+                    "进程" to if (extras.runningProcs >= 0) {
+                        "${extras.runningProcs} / ${extras.totalProcs}"
+                    } else "--",
+                )
+            )
+
+            Spacer(Modifier.height(16.dp))
+            CardSectionLabel("网络与磁盘")
+            Spacer(Modifier.height(6.dp))
+            SpecGrid(
+                listOf(
+                    "网络下行" to fmtRate(extras.netRxBps),
+                    "网络上行" to fmtRate(extras.netTxBps),
+                    "磁盘读" to fmtRate(extras.diskReadBps),
+                    "磁盘写" to fmtRate(extras.diskWriteBps),
+                )
+            )
+
+            Spacer(Modifier.height(16.dp))
+            CardSectionLabel("IO 压力")
+            Spacer(Modifier.height(6.dp))
+            if (extras.ioPressure10 >= 0f) {
+                // UsageBar 只画条，标签与数值要自己排一行
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "some avg10",
+                        style = OsText.label,
+                        color = c.textSecondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = String.format(java.util.Locale.US, "%.1f%%", extras.ioPressure10),
+                        style = OsText.value,
+                        color = c.textPrimary,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                UsageBar(
+                    fraction = extras.ioPressure10 / 100f,
+                    color = ChartColors.power,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "表示最近 10 秒内有进程因等待 IO 而停顿的时间占比。接近 0 说明存储不构成瓶颈。",
+                    style = OsText.micro,
+                    color = c.textTertiary,
+                )
+            } else {
+                Text(
+                    text = "-- 该内核未提供 PSI（需要 5.13 及以上且 CONFIG_PSI 开启）",
+                    style = OsText.micro,
+                    color = c.textTertiary,
+                )
+            }
+        }
+    }
+}
+
+/** 负载值格式化：不可读显示 `--`，保留两位小数 */
+private fun fmtLoad(v: Float): String =
+    if (v < 0f) "--" else String.format(java.util.Locale.US, "%.2f", v)
+
+/** 速率格式化：不可读显示 `--`，自动进位到 B/KB/MB 每秒 */
+private fun fmtRate(bps: Long): String {
+    if (bps < 0L) return "--"
+    return when {
+        bps >= 1_048_576L -> String.format(java.util.Locale.US, "%.2f MB/s", bps / 1_048_576.0)
+        bps >= 1_024L -> String.format(java.util.Locale.US, "%.1f KB/s", bps / 1_024.0)
+        else -> "$bps B/s"
     }
 }
 
@@ -366,6 +525,9 @@ private fun FpsTrendCard(
             height = 42.dp,
             valueFormatter = { "%.0f".format(it) },
             showPeak = false,
+            // 概览页的迷你折线只有 42dp 高，塞刻度会挤掉曲线本身；
+            // 这一格的量程和当前值都由卡片头部（右上角的 FPS 数字）交代
+            showYAxis = false,
         )
         Spacer(Modifier.height(4.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -385,7 +547,9 @@ private data class Health(val level: HealthLevel, val title: String, val detail:
  * 把这些混在一起按最严重的一项定级，避免出现「一切正常」与「温度偏高」同时出现在一屏。
  *
  * **SoC 结温与电池温度必须是两个维度，不能合并。**
- * [socTempC] 来自 `/sys/class/thermal/thermal_zone0`（真机上是 `aoss-0`，SoC 结温），
+ * [socTempC] 来自 `thermal_zone*` 中按 `type` 语义挑出的 CPU/SoC 传感器
+ * （真机实测：优先取 `cpuss-*`，其次 `cpu-N-M-K`；`aoss-*` 是常开子系统，
+ * 不是 SoC 结温，已在 [CpuDataSource] 中排除），
  * [batteryTempC] 来自 `BatteryManager.EXTRA_TEMPERATURE`。两者的正常区间差着几十度：
  * SoC 结温 40~70 ℃ 属正常工作范围，要到 85 ℃ 附近才触发内核降频；
  * 电池温度则 45 ℃ 已接近告警线。曾经把二者写成 `cpu.tempC ?: batteryTempC`
@@ -402,15 +566,13 @@ private fun evaluateHealth(
     charging: Boolean,
 ): Health {
     // 判据是「有没有提权通道」，不是「有没有 root」。
-    // ADB / Shizuku 是完全合法的使用方式（能读 CPU 占用与频率、能管进程），
-    // 原实现用 rootAvailable 判断，导致 ADB 模式下概览页常年挂着一条
-    // 「未获取 Root 权限」的黄色警告，与同一屏里正常显示的数据自相矛盾。
+    // 用能力表而不是 rootAvailable，可以让门控逻辑在通道增减时保持一致。
     if (!privilegeAvailable) {
         return Health(
             level = HealthLevel.Warn,
             title = "未启用提权通道",
-            detail = "CPU 占用、网络、磁盘 IO 等需要 shell 身份的数据不可读；" +
-                "可在设置中启用 ADB / Shizuku / Root",
+            detail = "CPU 占用、网络、磁盘 IO 等需要 root 身份的数据不可读；" +
+                "可在设置 → 提权管理中完成 Root 授权",
         )
     }
     // SoC 结温阈值按内核 thermal 的降频尺度取：85 ℃ 接近关核/降频，72 ℃ 是持续满载的预警线

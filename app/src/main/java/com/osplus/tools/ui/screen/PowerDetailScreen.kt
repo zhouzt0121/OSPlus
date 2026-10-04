@@ -3,7 +3,6 @@ package com.osplus.tools.ui.screen
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material.icons.Icons
@@ -43,7 +42,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.osplus.tools.core.ChargeController
 import com.osplus.tools.core.PowerRecorder
 import com.osplus.tools.model.AppDrainEntry
 import com.osplus.tools.model.PowerSource
@@ -67,11 +65,7 @@ import com.osplus.tools.ui.components.axisSpanLabel
 import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.vm.DeviceViewModel
-import com.osplus.tools.ui.components.LiquidGlassColors
 import com.osplus.tools.ui.components.LiquidNavTabs
-import com.osplus.tools.ui.components.LiquidSlider
-import com.osplus.tools.ui.liquid.LiquidButton
-import com.kyant.backdrop.backdrops.emptyBackdrop
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import com.osplus.tools.ui.components.bottomBarContentPadding
@@ -82,19 +76,21 @@ fun PowerDetailScreen(vm: DeviceViewModel) {
     // 页签状态放在 ViewModel：顶栏由根布局渲染，要根据它决定是否显示
     // 「复制 / 删除本次记录」两个动作，页内状态顶栏读不到
     val tab by vm.powerTab.collectAsStateWithLifecycle()
-    val tabs = remember { listOf("耗电统计", "充电统计", "充电控制") }
+    // 「充电控制」页签已于 2.6.5 移除：真机实测该功能不可用（写 charging_enabled /
+    // input_suspend 等节点在当前内核上不存在或被厂商充电策略接管，回读校验必然失败），
+    // 保留一个永远失败的页面没有意义。
+    val tabs = remember { listOf("耗电统计", "充电统计") }
 
     Column(Modifier.fillMaxSize()) {
         LiquidNavTabs(
             items = tabs,
-            selectedIndex = tab,
+            selectedIndex = tab.coerceIn(0, tabs.lastIndex),
             onSelect = { vm.setPowerTab(it) },
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
         )
         when (tab) {
             0 -> PowerRecordTab(vm)
-            1 -> ChargeStatsTab(vm)
-            else -> ChargeControlTab(vm)
+            else -> ChargeStatsTab(vm)
         }
     }
 }
@@ -420,6 +416,7 @@ private fun PowerRecordTab(vm: DeviceViewModel) {
                             MultiLineChart(
                                 series = series,
                                 maxValue = peak.coerceAtLeast(10f),
+                                unit = "CPU %",
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
@@ -644,109 +641,6 @@ private fun ChargeStatsTab(vm: DeviceViewModel) {
                     InfoRow("循环次数", if (battery.cycleCount >= 0) "${battery.cycleCount}" else "-")
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun ChargeControlTab(vm: DeviceViewModel) {
-    val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
-    val battery by vm.battery.collectAsStateWithLifecycle()
-    val context = LocalContext.current
-    var nodes by remember { mutableStateOf<List<String>>(emptyList()) }
-    var currentLimit by remember { mutableStateOf(3000f) }
-
-    LaunchedEffect(rootAvailable) {
-        nodes = ChargeController.availableNodes()
-        ChargeController.readChargeCurrentLimit()?.let { currentLimit = it / 1000f }
-    }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = bottomBarContentPadding(),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        if (!rootAvailable) {
-            item { NoticeBanner("充电控制需要 Root 权限；未授权时仅可查看状态。") }
-        }
-        item {
-            SectionCard() {
-                Column(Modifier.padding(vertical = 3.dp)) {
-                    SwitchRow(
-                        label = "允许充电",
-                        summary = if (nodes.any { it.contains("charging") || it.contains("suspend") }) {
-                            "通过内核节点直接控制充电通断"
-                        } else {
-                            "当前内核未暴露充电开关节点，无法控制"
-                        },
-                        checked = battery.chargingEnabled ?: true,
-                        enabled = rootAvailable && nodes.any {
-                            it.contains("charging") || it.contains("suspend")
-                        },
-                        onCheckedChange = { vm.setChargingEnabled(it) },
-                    )
-                }
-            }
-        }
-        item {
-            SectionCard() {
-                Column(Modifier.padding(vertical = 5.dp)) {
-                    CardSectionLabel("充电电流上限")
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "%.0f mA".format(currentLimit),
-                        style = MiuixTheme.textStyles.title4,
-                        color = MiuixTheme.colorScheme.onBackground,
-                    )
-                    LiquidSlider(
-                        value = currentLimit,
-                        onValueChange = { currentLimit = it },
-                        valueRange = 100f..6000f,
-                        onValueChangeFinished = {
-                            vm.setChargeCurrentLimit((currentLimit * 1000).toInt())
-                        },
-                        enabled = rootAvailable && nodes.any {
-                            it.contains("current") || it.contains("limit")
-                        },
-                    )
-                    Text(
-                        text = "范围 100 ~ 6000 mA，仅在支持的内核上生效",
-                        style = MiuixTheme.textStyles.footnote2,
-                        color = MiuixTheme.colorScheme.onBackgroundVariant,
-                    )
-                }
-            }
-        }
-        item {
-            SectionCard() {
-                Column(Modifier.padding(vertical = 3.dp)) {
-                    CardSectionLabel("内核节点探测")
-                    Spacer(Modifier.height(8.dp))
-                    if (nodes.isEmpty()) {
-                        Text(
-                            text = "未检测到可用充电控制节点",
-                            style = MiuixTheme.textStyles.footnote1,
-                            color = MiuixTheme.colorScheme.onBackgroundVariant,
-                        )
-                    } else {
-                        nodes.forEach { InfoRow(label = it, value = "可用") }
-                    }
-                }
-            }
-        }
-        item {
-            LiquidButton(
-                onClick = {
-                    runCatching {
-                        context.startActivity(
-                            Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    }
-                },
-                backdrop = emptyBackdrop(),
-                surfaceColor = LiquidGlassColors.container(),
-            ) { Text("打开系统电池设置") }
         }
     }
 }

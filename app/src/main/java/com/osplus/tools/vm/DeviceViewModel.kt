@@ -7,6 +7,7 @@ import java.util.Locale
 import java.util.Date
 import java.text.SimpleDateFormat
 import com.osplus.tools.model.FpsRecord
+import com.osplus.tools.model.FpsSession
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.ImageBitmap
 import android.provider.MediaStore
@@ -22,9 +23,11 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.osplus.tools.core.BatteryDataSource
 import com.osplus.tools.core.BatteryEnergy
-import com.osplus.tools.core.ChargeController
 import com.osplus.tools.core.CpuDataSource
 import com.osplus.tools.core.FpsRecorder
+import com.osplus.tools.core.FpsWatchStore
+import com.osplus.tools.core.FpsSessionStats
+import com.osplus.tools.core.SysFpsDataSource
 import com.osplus.tools.core.GpuDataSource
 import com.osplus.tools.core.LiveMetrics
 import com.osplus.tools.core.LiveNotif
@@ -45,10 +48,9 @@ import com.osplus.tools.core.PrivilegeManager
 import com.osplus.tools.core.PrivilegeMode
 import com.osplus.tools.core.ProcessDataSource
 import com.osplus.tools.core.Shell
-import com.osplus.tools.core.adb.AdbPairClient
-import com.osplus.tools.core.adb.AdbScriptDeployer
-import com.osplus.tools.core.adb.Spake2
 import com.osplus.tools.core.SystemProbe
+import com.osplus.tools.core.SystemExtrasDataSource
+import com.osplus.tools.core.SystemTogglesDataSource
 import com.osplus.tools.service.FpsOverlayService
 import com.osplus.tools.ui.theme.AppThemeMode
 import com.osplus.tools.model.BatteryInfo
@@ -127,13 +129,13 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     private val _rootAvailable = MutableStateFlow(false)
     val rootAvailable: StateFlow<Boolean> = _rootAvailable.asStateFlow()
 
-    /** 当前生效的提权模式（Root / Shizuku / ADB），null 表示都没就绪 */
+    /** 当前生效的提权模式，null 表示未就绪 */
     val privilegeMode: StateFlow<PrivilegeMode?> = PrivilegeManager.mode
 
     /**
      * 用户在设置页点选的模式（见 [PrivilegeManager.selection]）。
      *
-     * 界面用它驱动「提权方式」分段条的选中态与详情展示——**点了就跟着变**，
+     * 界面用它驱动「提权方式」的选中态与详情展示——**点了就跟着变**，
      * 不受「该模式当前能不能用」影响；实际生效的通道仍是 [privilegeMode]。
      */
     val privilegeSelection: StateFlow<PrivilegeMode?> = PrivilegeManager.selection
@@ -141,7 +143,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     /** 当前模式下各项能力的可用性，界面据此决定控件是否可点 */
     val capabilities: StateFlow<PrivilegeCapabilities> = PrivilegeManager.capabilities
 
-    /** 各模式在本机的可探测状态，设置页用来展示「能用哪些模式」 */
+    /** 本机的可探测状态，界面用来展示「能不能用」 */
     val privilegeProbe: StateFlow<PrivilegeManager.ModeProbe> = PrivilegeManager.probe
 
     private val _usageAccess = MutableStateFlow(false)
@@ -264,6 +266,12 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
                         .onFailure { Log.w(TAG, "采样失败，跳过本轮", it) }
                     // 每 5 个采样点做一次完整快照，降低开销
                     if (tick % 5L == 0L) runCatching { fullSnapshot() }
+                    // 扩展指标只有显式开启时才采：它是额外一条 shell 命令，
+                    // 只看 CPU / 内存 / 功耗的用户不该为此付往返开销
+                    if (_extrasEnabled.value) {
+                        runCatching { SystemExtrasDataSource.read() }
+                            .onSuccess { _extras.value = it }
+                    }
                     tick++
                     // 录制期间按更低频率采应用侧数据：root `top` 一次要上百毫秒，
                     // 每秒调用会明显抬高录制本身的功耗，反而污染被测对象
@@ -403,6 +411,27 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
         val coreFreqs = CpuDataSource.readFreqs(cores)
         val fpsState = FpsRecorder.sample.value
+        // 系统级帧率：只在「有人看」的时候才采，避免无谓地每秒起一个 shell 进程。
+        // 有人看 = 正在记录 / 帧率页可见（sysFpsWanted）/ **悬浮窗正在运行**。
+        //
+        // 悬浮窗必须算进来：它的全部意义就是「盖在别的应用上面看帧率」，
+        // 那种场景下本应用自己的逐帧回调早已不代表屏幕实况，只靠它会把
+        // 悬浮窗的数字带偏。少了这一条，悬浮窗会一直退回自身值。
+        val sysFps: Float = if (
+            FpsRecorder.recording.value || sysFpsWanted || FpsOverlayState.running.value
+        ) {
+            runCatching { SysFpsDataSource.read() }.getOrNull() ?: -1f
+        } else {
+            -1f
+        }
+        _sysFps.value = sysFps
+        // 节点普查：仅 debug 构建、每次进程生命周期跑一次。
+        // 用途是换机型后快速确认「哪些节点真的可读」（见 SystemProbe.census 的说明），
+        // release 包不跑，避免无谓开销。
+        if (!censusDone && com.osplus.tools.BuildConfig.DEBUG && Shell.isRootAvailable()) {
+            censusDone = true
+            runCatching { SystemProbe.census() }
+        }
         val powerMw = estimatePowerMw(tick, now)
         val chargeW = estimateChargeW(tick)
 
@@ -418,6 +447,8 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             powerMw = powerMw,
             batteryTempC = tick.batteryTempC,
             chargeW = chargeW,
+            // 悬浮窗 / 通知要用：它们跑在 Service 里，拿不到 VM 的 _sysFps
+            sysFps = sysFps,
         )
 
         // 耗电录制：喂一条采样。
@@ -450,7 +481,12 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             gpuMhz = tick.gpuMhz,
             gpuLoad = tick.gpuLoad,
             powerMw = powerMw,
-            fps = fpsState.fps,
+            // **帧率取「有效值」：系统级优先。**
+            // 系统级读的是显示控制器实际输出，是屏幕上真实发生的帧率（切到游戏里也有效）；
+            // 应用自身 Choreographer 只反映本应用的渲染节奏，后台时几乎无意义。
+            // 系统级不可读（-1 / 0）时才退回自身值，保证界面永远有数可看。
+            fps = if (sysFps > 0f) sysFps else fpsState.fps,
+            fpsApp = fpsState.fps,
             batteryTempC = tick.batteryTempC,
         )
 
@@ -460,7 +496,10 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         if (FpsRecorder.recording.value) {
             val record = FpsRecord(
                 timeMs = now,
-                fps = fpsState.fps,
+                // 与 MetricSample.fps 同口径：有效值（系统级优先），保证图表与记录一致
+                fps = if (sysFps > 0f) sysFps else fpsState.fps,
+                fpsApp = fpsState.fps,
+                fpsSys = sysFps,
                 jank = fpsState.jankCount,
                 bigJank = fpsState.bigJankCount,
                 avgFrameMs = fpsState.avgFrameMs,
@@ -475,7 +514,11 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
                 powerMw = powerMw,
                 batteryTempC = tick.batteryTempC,
             )
+            // 内存侧只保留最近一段给「实时视图」用；**完整记录落 SQLite**，
+            // 这样长录制（整局游戏）不再受 7200 条上限截断，杀进程也不丢。
             _fpsRecords.value = (_fpsRecords.value + record).takeLast(MAX_FPS_RECORDS)
+            val sid = activeSessionId
+            if (sid > 0L) fpsStore.addSample(sid, record)
         }
 
         // 用同一次采样的结果同步刷新概览用的汇总数据，避免重复读取
@@ -586,19 +629,6 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
 
-    fun setChargingEnabled(enabled: Boolean) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { ChargeController.setChargingEnabled(enabled) }
-            fullSnapshot()
-        }
-    }
-
-    fun setChargeCurrentLimit(ua: Int) {
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) { ChargeController.setChargeCurrentLimit(ua) }
-        }
-    }
-
     /**
      * 调整 ZRAM 容量（KB），会重建交换分区。
      *
@@ -660,6 +690,89 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _fpsRecords = MutableStateFlow<List<FpsRecord>>(emptyList())
     val fpsRecords: StateFlow<List<FpsRecord>> = _fpsRecords.asStateFlow()
+
+    // ---------------- 帧率记录会话化（SQLite 持久化） ----------------
+
+    /** 帧率记录的持久化存储 */
+    private val fpsStore: FpsWatchStore by lazy { FpsWatchStore(context) }
+
+    /** 当前正在记录的会话 id；<=0 表示没有进行中的会话 */
+    @Volatile
+    private var activeSessionId: Long = -1L
+
+    /** 建会话的异步作业，用于让开始记录具备幂等性（见 [startFpsRecording]） */
+    private var startJob: Job? = null
+
+    /** 历史会话列表（按开始时间倒序） */
+    private val _fpsSessions = MutableStateFlow<List<FpsSession>>(emptyList())
+    val fpsSessions: StateFlow<List<FpsSession>> = _fpsSessions.asStateFlow()
+
+    /** 当前选中的历史会话及其采样，供双轴图查看 */
+    private val _viewingSessionId = MutableStateFlow(-1L)
+    val viewingSessionId: StateFlow<Long> = _viewingSessionId.asStateFlow()
+
+    private val _viewingSamples = MutableStateFlow<List<FpsRecord>>(emptyList())
+    val viewingSamples: StateFlow<List<FpsRecord>> = _viewingSamples.asStateFlow()
+
+    /** 系统级帧率（整机实测），-1 表示不可读 */
+    private val _sysFps = MutableStateFlow(-1f)
+
+    /** 【临时诊断】节点普查只跑一次 */
+    private var censusDone = false
+    val sysFps: StateFlow<Float> = _sysFps.asStateFlow()
+
+    /**
+     * 帧率页是否可见。
+     *
+     * 系统级帧率靠 shell 读 sysfs，每秒一次进程开销不小；页面不可见且未在记录时
+     * 就没必要采，因此由页面在进入/离开时置位。
+     */
+    @Volatile
+    private var sysFpsWanted: Boolean = false
+
+    fun setSysFpsWanted(wanted: Boolean) {
+        sysFpsWanted = wanted
+        if (!wanted) _sysFps.value = -1f
+    }
+
+    /** 刷新历史会话列表 */
+    fun refreshFpsSessions() {
+        viewModelScope.launch {
+            _fpsSessions.value = withContext(Dispatchers.IO) { fpsStore.sessions() }
+        }
+    }
+
+    /** 打开某个历史会话，加载其采样供绘图 */
+    fun openFpsSession(sessionId: Long) {
+        viewModelScope.launch {
+            // **先加载、后置 id**。反过来的话界面会有一瞬间处于
+            // 「viewingSessionId 已设但 viewingSamples 还空」的中间态，
+            // FpsScreen 此时会落到空状态分支，用户看到一闪而过的
+            // 「开启开始记录后…」提示，像是没打开成功。
+            val data = withContext(Dispatchers.IO) { fpsStore.samples(sessionId) }
+            _viewingSamples.value = data
+            _viewingSessionId.value = sessionId
+        }
+    }
+
+    /** 关闭会话查看，回到当前记录视图 */
+    fun closeFpsSession() {
+        _viewingSessionId.value = -1L
+        _viewingSamples.value = emptyList()
+    }
+
+    /** 删除一个历史会话 */
+    fun deleteFpsSession(sessionId: Long) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { fpsStore.deleteSession(sessionId) }
+            if (_viewingSessionId.value == sessionId) closeFpsSession()
+            refreshFpsSessions()
+        }
+    }
+
+    /** 查询某会话的统计（均值 / 极值 / 低帧占比 / 高温占比） */
+    suspend fun fpsSessionStats(sessionId: Long): FpsSessionStats =
+        withContext(Dispatchers.IO) { fpsStore.statsOf(sessionId) }
 
     private val _lastExportPath = MutableStateFlow<String?>(null)
     val lastExportPath: StateFlow<String?> = _lastExportPath.asStateFlow()
@@ -734,16 +847,56 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startFpsRecording() {
-        FpsRecorder.startRecording()
+        // 幂等：开会话是异步的，用户可能在它落定前又点一次开关
+        // （第一次点 = 开始，第二次点会先走 stop 再走 start）。
+        // 没有这道闸门会开出两个会话、或让第一次的会话永远挂在「未正常结束」。
+        if (startJob?.isActive == true) return
+        startJob = viewModelScope.launch {
+            val pkg = withContext(Dispatchers.IO) {
+                runCatching { ProcessDataSource.foregroundPackage(context) }.getOrNull()
+            }
+            val sid = withContext(Dispatchers.IO) { fpsStore.createSession(pkg) }
+            activeSessionId = sid
+            // 建会话失败（sid <= 0）时不打开记录开关：
+            // 否则会录一段「只在内存里、永远不落库」的数据，比不录更误导。
+            if (sid > 0L) {
+                closeFpsSession()
+                FpsRecorder.startRecording()
+            } else {
+                android.util.Log.e("OSPlusrFps", "建会话失败，拒绝开始记录")
+            }
+        }
     }
 
     fun stopFpsRecording() {
+        // 若会话还在建（用户点了开始又立刻点停止），先把建会话的作业停掉，
+        // 否则它稍后仍会把 `activeSessionId` 写回来并重新打开 recording ——
+        // 表现为「明明关了开关，过一会儿自己又开始录」。
+        startJob?.cancel()
+        startJob = null
         FpsRecorder.stopRecording()
+        val sid = activeSessionId
+        activeSessionId = -1L
+        // 收尾：写入 time_end 与采样条数（Scene5 漏了这一步）
+        if (sid > 0L) {
+            viewModelScope.launch {
+                withContext(Dispatchers.IO) { fpsStore.endSession(sid) }
+                refreshFpsSessions()
+            }
+        }
     }
 
     fun clearFpsRecords() {
+        startJob?.cancel()
+        startJob = null
         _fpsRecords.value = emptyList()
         FpsRecorder.reset()
+        activeSessionId = -1L
+        closeFpsSession()
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { fpsStore.clearAll() }
+            refreshFpsSessions()
+        }
     }
 
     /**
@@ -819,13 +972,31 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 完整重新探测提权通道。
+     *
+     * 与 [refreshRootState] 的差别：后者只重探 root 探测缓存 + 让后端重连，
+     * 不重跑「通道是否可用」那套判定。提权管理页的「重新探测」按钮
+     * 期望的是后者——用户刚在系统里授权完 root，需要看到状态立刻刷新。
+     *
+     * 两个都做，顺序不能反：先让 root 探测缓存失效，再跑模式判定，
+     * 否则模式判定读到的还是旧的 root 结果。
+     */
+    fun reprobePrivilege() {
+        viewModelScope.launch {
+            _rootAvailable.value = Shell.isRootAvailable(force = true)
+            PrivilegeManager.redetect()
+            PrivilegeManager.refresh(probeRoot = false)
+            _privilegeMessage.value = "已重新探测提权通道"
+        }
+    }
+
     // ---------------- 提权模式 ----------------
 
     /**
      * 切换到指定提权模式。
      *
-     * 切换后要重跑一次完整快照：不同模式下能读到的节点不同
-     * （例如 Shizuku 读不到 /data/adb，性能调度摘要会变成「不可用」），
+     * 切换后要重跑一次完整快照：不同模式下能读到的节点不同，
      * 不刷新的话界面会停留在上一个模式的读数上。
      */
     fun selectPrivilegeMode(mode: PrivilegeMode) {
@@ -840,149 +1011,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             } else {
                 when (mode) {
                     PrivilegeMode.ROOT -> "Root 不可用：未检测到已授权的 su"
-                    PrivilegeMode.SHIZUKU ->
-                        "Shizuku 不可用：请确认已安装并启动 Shizuku，且已授权本应用"
-                    PrivilegeMode.ADB ->
-                        "ADB 不可用：请开启「无线调试」并完成配对；" +
-                            "或用数据线连电脑，执行设置页给出的 adb 命令拉起守护进程" +
-                            "（后者在设备重启后需重新执行）"
                 }
-            }
-        }
-    }
-
-    /** 对 Shizuku 请求 shell 权限 */
-    fun requestShizukuPermission() {
-        viewModelScope.launch {
-            val backend = PrivilegeManager.shizuku()
-            if (backend == null || !backend.isSupported()) {
-                _privilegeMessage.value = "Shizuku 未运行：请先安装并启动 Shizuku"
-                return@launch
-            }
-            val granted = backend.requestPermission()
-            _privilegeMessage.value =
-                if (granted) "Shizuku 已授权" else "Shizuku 授权被拒绝"
-            PrivilegeManager.refresh(preferred = PrivilegeMode.SHIZUKU)
-        }
-    }
-
-    /**
-     * ADB 无线调试配对。
-     *
-     * 配对端口是随机的、且只在「使用配对码配对设备」页面打开期间才广播，
-     * 因此端口留空时现查一次——用户只需要填那 6 位配对码。
-     */
-    fun pairAdb(port: Int?, code: String, host: String? = null) {
-        viewModelScope.launch {
-            if (code.trim().length != 6) {
-                _privilegeMessage.value = "配对码应为 6 位数字"
-                return@launch
-            }
-            _privilegeMessage.value = "正在查找配对端口…"
-            val resolvedPort = port ?: PrivilegeManager.discoverPairingPort()
-            if (resolvedPort == null || resolvedPort <= 0) {
-                _privilegeMessage.value =
-                    "未找到配对端口：请先在开发者选项里打开「使用配对码配对设备」页面，再点开始配对"
-                return@launch
-            }
-            _privilegeMessage.value = "正在配对（端口 $resolvedPort）…"
-            val result = PrivilegeManager.pairAdb(host, resolvedPort, code)
-            _privilegeMessage.value = when (result) {
-                is AdbPairClient.Result.Success -> "配对成功，已切换到 ADB 模式"
-                is AdbPairClient.Result.WrongCode -> "配对失败：配对码错误或已过期"
-                is AdbPairClient.Result.TlsError -> result.detail
-                is AdbPairClient.Result.Failed -> "配对失败：${result.detail}"
-            }
-            if (result is AdbPairClient.Result.Success) {
-                _cpu.value = CpuDataSource.read()
-                refreshPerfSched()
-            }
-        }
-    }
-
-    /**
-     * 手动连接无线调试**连接端口**。
-     *
-     * 配对与连接是两个不同端口：配对给了我们身份，连接才是拿 shell 的通路。
-     * 正常情况下 mDNS 会自动发现连接端口，这里只是发现失败时的兜底。
-     */
-    fun connectAdb(port: Int, host: String = "127.0.0.1") {
-        viewModelScope.launch {
-            _privilegeMessage.value = "正在连接…"
-            // 端口留空（传 0）时先让 mDNS 查一次，查不到再报错。
-            // 无线调试的连接端口同样是随机的，让用户去翻没有道理。
-            val resolved = if (port > 0) port else PrivilegeManager.discoverConnectPort() ?: 0
-            if (resolved <= 0) {
-                _privilegeMessage.value =
-                    "未找到连接端口：请确认「无线调试」开关处于开启状态，或手动填入端口号"
-                return@launch
-            }
-            val ok = PrivilegeManager.adbConnect(host, resolved)
-            _privilegeMessage.value =
-                if (ok) "已连接无线调试（端口 $resolved）"
-                else "连接失败：请检查端口，并确认「无线调试」开关处于开启状态"
-            if (ok) {
-                PrivilegeManager.refresh(preferred = PrivilegeMode.ADB)
-                _cpu.value = CpuDataSource.read()
-                refreshPerfSched()
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 脚本激活通道（照搬 Scene 的 up.sh 方式）
-    //
-    // 与上面的配对流程互补：配对是应用内自动、依赖无线调试；
-    // 脚本是用户从电脑跑一条 adb 命令、只要有 USB 就行，不需要配对。
-    // ------------------------------------------------------------------
-
-    /** 激活脚本的路径与调用命令 */
-    data class ScriptInfo(val path: String, val command: String)
-
-    private val _scriptInfo = MutableStateFlow<ScriptInfo?>(null)
-
-    /** 脚本落点与可复制的 adb 命令；未部署时为 null */
-    val scriptInfo: StateFlow<ScriptInfo?> = _scriptInfo.asStateFlow()
-
-    private val _scriptCapabilities = MutableStateFlow<Map<String, String>>(emptyMap())
-
-    /** 脚本实测出的 shell 能力表（`up.sh` 第 3 步的探测结果） */
-    val scriptCapabilities: StateFlow<Map<String, String>> = _scriptCapabilities.asStateFlow()
-
-    /** 把 `up.sh` 从 assets 部署到外部私有目录，供 adb 读取执行 */
-    fun deployActivationScript() {
-        when (val r = PrivilegeManager.deployActivationScript()) {
-            is AdbScriptDeployer.DeployResult.Ok -> {
-                _scriptInfo.value = ScriptInfo(
-                    path = r.path,
-                    command = PrivilegeManager.activationCommand().orEmpty(),
-                )
-                _privilegeMessage.value = "脚本已部署，可用电脑执行下方命令"
-            }
-            is AdbScriptDeployer.DeployResult.Failed -> {
-                _privilegeMessage.value = "部署失败：${r.reason}"
-            }
-        }
-    }
-
-    /**
-     * 通过**已建立的 ADB 通道**执行激活脚本。
-     *
-     * 这是相对 Scene 的增强 —— Scene 只能由用户从电脑手动执行。
-     */
-    fun runActivationScript() {
-        viewModelScope.launch {
-            _privilegeMessage.value = "正在执行激活脚本…"
-            val res = PrivilegeManager.runActivationScript()
-            _privilegeMessage.value = if (res.success) {
-                // 脚本输出较长，只保留结尾部分，前面是逐项进度
-                "激活完成\n" + res.stdout.trim().takeLast(320)
-            } else {
-                "激活失败：" + res.stderr.ifBlank { res.stdout }.trim().take(200)
-            }
-            if (res.success) {
-                _scriptCapabilities.value = PrivilegeManager.readScriptCapabilities()
-                PrivilegeManager.refresh()
             }
         }
     }
@@ -994,34 +1023,6 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     fun clearPrivilegeMessage() {
         _privilegeMessage.value = null
     }
-
-    /**
-     * 运行 SPAKE2 自检。
-     *
-     * 之所以做成界面上可点的操作而不是单元测试：这段密码学代码是自行移植的，
-     * 而 R8 会裁剪无人调用的方法——被裁剪掉的自检等于不存在。
-     * 挂在这里既保证它在 Release 包里存活，也让用户/开发者随时能在真机上验证。
-     *
-     * @return 面向用户的结果描述
-     */
-    fun runSpake2SelfTest(): String = runCatching {
-        val r = Spake2.selfTest()
-        buildString {
-            append(if (r.allPassed) "全部通过" else "存在问题")
-            append("（标量乘向量 ")
-            append(if (r.scalarMultVectorOk) "✓" else "✗")
-            append("，密钥一致 ")
-            append(if (r.keyAgreementOk) "✓" else "✗")
-            append("，错误口令分离 ")
-            append(if (r.wrongPasswordMismatchOk) "✓" else "✗")
-            append("）")
-            if (!r.scalarMultVectorOk) {
-                // 向量不符说明域运算被改坏了，带上实际值便于比对
-                append("\n2B 实际=")
-                append(r.twoBHex)
-            }
-        }
-    }.getOrElse { "自检执行失败：${it.message ?: it.javaClass.simpleName}" }
 
     // ---------------- 耗电录制 ----------------
 
@@ -1243,6 +1244,130 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             val r = withContext(Dispatchers.IO) { PerfSchedDataSource.restartAsoul() }
             _schedNotice.value = r.message
             refreshPerfSched()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 系统开关（settings get/put）
+    //
+    // 状态用「一个 map 装全部开关」而不是十几个独立 StateFlow：
+    // 读回时本来就是一条命令拿全量，拆开反而要在十几个地方各自刷新。
+    // ------------------------------------------------------------------
+
+    private val _sysToggles = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val sysToggles: StateFlow<Map<String, Boolean>> = _sysToggles.asStateFlow()
+
+    private val _animationScale = MutableStateFlow("1.0")
+    val animationScale: StateFlow<String> = _animationScale.asStateFlow()
+
+    private val _iconBlacklist = MutableStateFlow<Set<String>>(emptySet())
+    val iconBlacklist: StateFlow<Set<String>> = _iconBlacklist.asStateFlow()
+
+    private val _sysToggleNotice = MutableStateFlow<String?>(null)
+    val sysToggleNotice: StateFlow<String?> = _sysToggleNotice.asStateFlow()
+
+    /** 是否已读过一次开关状态。未读过时界面显示加载态而不是「全部关闭」 */
+    private val _sysTogglesLoaded = MutableStateFlow(false)
+    val sysTogglesLoaded: StateFlow<Boolean> = _sysTogglesLoaded.asStateFlow()
+
+    fun clearSysToggleNotice() {
+        _sysToggleNotice.value = null
+    }
+
+    /** 读取全部系统开关。进入该页时调用一次，写入后也会自动回读 */
+    fun refreshSystemToggles() {
+        viewModelScope.launch {
+            val raw = withContext(Dispatchers.IO) {
+                runCatching { SystemTogglesDataSource.readAll() }.getOrDefault(emptyMap())
+            }
+            if (raw.isEmpty()) {
+                _sysToggleNotice.value = "读取失败：提权通道未就绪"
+                return@launch
+            }
+            _sysToggles.value = SystemTogglesDataSource.TOGGLES.associate { def ->
+                def.id to SystemTogglesDataSource.boolOf(raw, def)
+            }
+            _animationScale.value = SystemTogglesDataSource.animationScale(raw)
+            _iconBlacklist.value = SystemTogglesDataSource.iconBlacklist(raw)
+            _sysTogglesLoaded.value = true
+        }
+    }
+
+    /**
+     * 写一个开关。
+     *
+     * 乐观更新：先改本地状态让开关立刻响应，再落命令；失败则回滚并给出提示。
+     * 不这样做的话，每次点击都要等一个 shell 往返（daemon 通道约 0.2 秒），
+     * 滑动开关会出现明显回弹。
+     */
+    fun setSystemToggle(def: SystemTogglesDataSource.ToggleDef, enabled: Boolean) {
+        val before = _sysToggles.value
+        _sysToggles.value = before + (def.id to enabled)
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { SystemTogglesDataSource.writeBool(def, enabled) }.getOrDefault(false)
+            }
+            if (!ok) {
+                _sysToggles.value = before
+                _sysToggleNotice.value = "「${def.label}」写入失败，已回滚"
+            }
+        }
+    }
+
+    fun setAnimationScale(scale: String) {
+        val before = _animationScale.value
+        _animationScale.value = scale
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { SystemTogglesDataSource.writeAnimationScale(scale) }.getOrDefault(false)
+            }
+            if (!ok) {
+                _animationScale.value = before
+                _sysToggleNotice.value = "动画缩放写入失败，已回滚"
+            }
+        }
+    }
+
+    /** 状态栏图标显隐。注意写的是**完整集合**，调用方要负责增删后再传 */
+    fun toggleIconBlacklist(item: String) {
+        val before = _iconBlacklist.value
+        val next = if (item in before) before - item else before + item
+        _iconBlacklist.value = next
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching { SystemTogglesDataSource.writeIconBlacklist(next) }.getOrDefault(false)
+            }
+            if (!ok) {
+                _iconBlacklist.value = before
+                _sysToggleNotice.value = "状态栏图标写入失败，已回滚"
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 扩展系统指标（负载 / 网络 / IO / 磁盘）
+    //
+    // 1 秒一次、与主采样循环同频。数据源内部自带差分基准，
+    // 因此不需要在这里额外维护上一次的值。
+    // ------------------------------------------------------------------
+
+    private val _extras = MutableStateFlow(SystemExtrasDataSource.Extras())
+    val extras: StateFlow<SystemExtrasDataSource.Extras> = _extras.asStateFlow()
+
+    /** 扩展指标的开关。默认关闭——多一条 shell 命令，纯看 CPU/内存的用户不需要付这个代价 */
+    private val _extrasEnabled = MutableStateFlow(false)
+    val extrasEnabled: StateFlow<Boolean> = _extrasEnabled.asStateFlow()
+
+    fun setExtrasEnabled(enabled: Boolean) {
+        _extrasEnabled.value = enabled
+        if (enabled) {
+            viewModelScope.launch {
+                val e = withContext(Dispatchers.IO) {
+                    runCatching { SystemExtrasDataSource.read() }
+                        .getOrDefault(SystemExtrasDataSource.Extras())
+                }
+                _extras.value = e
+            }
         }
     }
 

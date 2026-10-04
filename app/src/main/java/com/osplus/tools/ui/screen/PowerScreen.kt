@@ -91,7 +91,7 @@ fun PowerScreen(vm: DeviceViewModel) {
             }
         }
 
-        // 三个页签沿用原有实现：耗电统计 / 充电统计 / 充电控制
+        // 两个页签：耗电统计 / 充电统计（「充电控制」已于 2.6.5 移除）
         PowerDetailScreen(vm)
     }
 }
