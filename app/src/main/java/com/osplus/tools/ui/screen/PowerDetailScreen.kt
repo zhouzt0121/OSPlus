@@ -398,18 +398,14 @@ private fun PowerRecordTab(vm: DeviceViewModel) {
                             )
                         } else {
                             val top = drains.take(PowerRecorder.MAX_SERIES)
-                            val palette = listOf(
-                                ChartColors.cpu,
-                                ChartColors.gpu,
-                                ChartColors.mem,
-                                ChartColors.power,
-                                ChartColors.fps,
-                            )
-                            val series = top.mapIndexed { i, e ->
+                            val series = top.map { e ->
                                 MultiSeries(
                                     label = e.label,
                                     values = cpuSeries.map { it.cpuByPackage[e.packageName] ?: 0f },
-                                    color = palette[i % palette.size],
+                                    // 不指定颜色：由 ChartColors.series 按序轮转。
+                                    // 原来手写的 cpu/gpu/mem/power/fps 里橙(mem)与红(power)
+                                    // 相邻，两条暖色细线在图上几乎分不开。
+                                    color = null,
                                 )
                             }
                             val peak = series.flatMap { it.values }.maxOrNull() ?: 0f

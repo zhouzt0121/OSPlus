@@ -122,7 +122,37 @@ object ChartColors {
     val fps = Color(0xFF9B6BE8)
     val temp = Color(0xFFEF6E7E)
     val zram = Color(0xFF4CB8E8)
+    val amber = Color(0xFFE8A33D)
+    val cyan = Color(0xFF2FB6C4)
+
+    /**
+     * 曲线调色板：**相邻两条颜色必须拉开色相**。
+     *
+     * 原实现把 `cpu/gpu/mem/power/fps` 直接铺给多序列，颜色本身没错，
+     * 但图上同时出现两条暖色（橙 mem + 红 power）在细线上几乎分不开。
+     * 这里把色相按「蓝 → 绿 → 紫 → 橙 → 青 → 红」重排，
+     * 保证任意相邻两序列的色相差 ≥ 60°，细线也能一眼分辨。
+     */
+    val series = listOf(cpu, gpu, fps, mem, cyan, amber, power, zram, temp)
 }
+
+/**
+ * 网格虚线间隔（3dp 实 / 3dp 空）。
+ *
+ * 抽成公共函数是为了让所有图表**共用同一套虚实语义**：
+ * 坐标轴与曲线是实线，坐标系内部的网格一律虚线。
+ * 各图各自 `PathEffect.dashPathEffect(floatArrayOf(...))` 时，
+ * 只要有一处漏掉，用户看到的就是「有的图虚、有的图实」。
+ */
+fun gridDashEffect(density: androidx.compose.ui.unit.Density): PathEffect =
+    PathEffect.dashPathEffect(
+        floatArrayOf(
+            with(density) { 3.dp.toPx() },
+            with(density) { 3.dp.toPx() },
+        ),
+    )
+
+/** 统一图表配色 */
 
 /**
  * 圆环进度图（环心文案由 [content] 提供）。
@@ -395,9 +425,7 @@ fun LineChart(
         }
 
         // 网格线用虚线：与实线的坐标轴/曲线区分开，视觉上「网格退后、数据向前」。
-        val gridDash = PathEffect.dashPathEffect(
-            floatArrayOf(with(density) { 3.dp.toPx() }, with(density) { 3.dp.toPx() }),
-        )
+        val gridDash = gridDashEffect(density)
         // Y 轴：网格线 + 刻度标签
         if (showYAxis) {
             tickValues.forEachIndexed { i, t ->
@@ -423,6 +451,9 @@ fun LineChart(
                 )
             }
         }
+
+        // 坐标系边框（实线）：上 + 右，与基线围出完整坐标框
+        drawAxisFrame(plotLeft, chartTop, size.width, chartBottom - 0.5f, c.hairline)
 
         // 基线
         drawLine(
@@ -506,6 +537,31 @@ fun LineChart(
             drawText(textLayoutResult = pm, topLeft = Offset(plotLeft, 0f))
         }
     }
+}
+
+/**
+ * 坐标系边框：上 / 右两条实线，与基线（下）、刻度栏（左）一起
+ * 围成完整的实线坐标系，内部网格则是虚线。
+ *
+ * 为什么必须画：只有一条基线时，网格虚线的右端「悬空」结束，
+ * 视觉上分不清是虚线收尾还是被裁掉。补上右边框后，虚线在边框处
+ * 干脆截断，「坐标系实线 / 网格虚线」的层级才立得住。
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAxisFrame(
+    left: Float,
+    top: Float,
+    right: Float,
+    bottom: Float,
+    color: Color,
+) {
+    val stroke = 1f
+    drawLine(color, Offset(left, top + stroke / 2f), Offset(right, top + stroke / 2f), stroke)
+    drawLine(
+        color,
+        Offset(right - stroke / 2f, top),
+        Offset(right - stroke / 2f, bottom),
+        stroke,
+    )
 }
 
 /**
@@ -873,7 +929,11 @@ private fun MiniBarStrip(
 data class MultiSeries(
     val label: String,
     val values: List<Float>,
-    val color: Color,
+    /**
+     * 曲线颜色。传 `null` 表示「交给 [ChartColors.series] 按序号轮转」——
+     * 调用方只想画几条线、懒得挑色时用这个，避免手写一串重复颜色。
+     */
+    val color: Color? = null,
 )
 
 /**
@@ -937,9 +997,7 @@ fun MultiLineChart(
             fun yOf(v: Float): Float = chartBottom - chartH * (v / safeMax).coerceIn(0f, 1f)
 
             // 网格线用虚线（与实线的坐标轴/曲线区分）
-            val gridDash = PathEffect.dashPathEffect(
-                floatArrayOf(with(density) { 3.dp.toPx() }, with(density) { 3.dp.toPx() }),
-            )
+            val gridDash = gridDashEffect(density)
             if (showYAxis) {
                 tickValues.forEachIndexed { i, t ->
                     val y = yOf(t)
@@ -963,6 +1021,9 @@ fun MultiLineChart(
                     )
                 }
             }
+
+            // 坐标系边框（实线）：上 + 右
+            drawAxisFrame(plotLeft, chartTop, size.width, chartBottom - 0.5f, c.hairline)
 
             drawLine(
                 color = c.hairline,
@@ -993,9 +1054,9 @@ fun MultiLineChart(
                     )
                 }
             }
-            series.forEach { s ->
+            series.forEachIndexed { si, s ->
                 val data = s.values
-                if (data.isEmpty()) return@forEach
+                if (data.isEmpty()) return@forEachIndexed
                 val stepX = if (data.size > 1) plotW / (data.size - 1) else plotW
                 val path = Path().apply {
                     data.forEachIndexed { i, v ->
@@ -1004,9 +1065,11 @@ fun MultiLineChart(
                         if (i == 0) moveTo(x, y) else lineTo(x, y)
                     }
                 }
+                // 颜色：调用方给了 color 就用它，否则按调色板轮转。
+                // 轮转而不是「默认全同色」——多序列图里两条同色线等于没有图例。
                 drawPath(
                     path = path,
-                    color = s.color,
+                    color = s.color ?: ChartColors.series[si % ChartColors.series.size],
                     style = Stroke(
                         width = with(density) { 1.8.dp.toPx() },
                         join = StrokeJoin.Round,
@@ -1023,17 +1086,26 @@ fun MultiLineChart(
                 Spacer(Modifier.height(4.dp))
             }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                series.chunked(2).forEach { row ->
+                // 每行 2 条，图例点的调色板序号要按**全局**序号算（不是行内序号），
+                // 否则第 2 行的第 1 条会拿到和第 1 行第 1 条相同的颜色。
+                series.chunked(2).forEachIndexed { rowIndex, row ->
+                    val rowOffset = rowIndex * 2
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        row.forEach { s ->
+                        row.forEachIndexed { ci, s ->
+                            // 图例圆点颜色必须与曲线一致：color 为 null 时
+                            // 曲线用的是调色板第 si 位，图例这里要还原同一个序号。
+                            val swatch = s.color
+                                ?: ChartColors.series[
+                                    (rowOffset + ci) % ChartColors.series.size
+                                ]
                             Row(
                                 modifier = Modifier.weight(1f),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Canvas(Modifier.size(7.dp)) { drawCircle(s.color) }
+                                Canvas(Modifier.size(7.dp)) { drawCircle(swatch) }
                                 Spacer(Modifier.width(5.dp))
                                 Text(
                                     text = s.label,
@@ -1108,9 +1180,7 @@ fun TimeSeriesChart(
         fun yOf(v: Float): Float = plotBottom - plotH * (v / safeY).coerceIn(0f, 1f)
 
         // Y 轴刻度 + 网格（网格用虚线，与实线的坐标轴/曲线区分）
-        val gridDash = PathEffect.dashPathEffect(
-            floatArrayOf(with(density) { 3.dp.toPx() }, with(density) { 3.dp.toPx() }),
-        )
+        val gridDash = gridDashEffect(density)
         yTicks.forEach { t ->
             val y = yOf(t)
             drawLine(
@@ -1129,6 +1199,9 @@ fun TimeSeriesChart(
                 ),
             )
         }
+
+        // 坐标系边框（实线）：上 + 右
+        drawAxisFrame(plotLeft, plotTop, plotRight, plotBottom, c.hairline)
 
         // X 轴刻度：短竖线 + 标签（原为只有标签、3 枚）
         repeat(xTickCount) { i ->
@@ -1307,9 +1380,7 @@ fun DualAxisChart(
                 .coerceIn(0f, 1f)
 
         // ---- 网格：左侧帧率挡位刻度，虚线 ----
-        val dash = PathEffect.dashPathEffect(
-            floatArrayOf(with(density) { 3.dp.toPx() }, with(density) { 3.dp.toPx() }),
-        )
+        val dash = gridDashEffect(density)
         // 刻度标在真实面板挡位上（60/90/120/…），而不是把量程等分 5 份。
         // 等分出来的 33/66/99 对不上任何真实刷新率，用户没法拿它和屏幕对上号。
         val leftTicks = frameRateTicks(leftMax).filter { it > 0f }
@@ -1350,18 +1421,32 @@ fun DualAxisChart(
         }
 
         // ---- 低帧参考线：一眼看出跌破阈值的时段 ----
+        // 阈值线只在「确实挡出网格间隔」时画。45 FPS 掉在 0~60 挡位档的中间时，
+        // 它离 0/60 两条网格线各差 15 FPS，在 224dp 高的图上不足 20px——
+        // 三根线挤成一团反而更难读。挤在一起就不画，低帧时段由右侧统计卡交代。
         if (left.values.any { it > 0f } && lowFpsThreshold in 0f..leftMax) {
             val y = yLeft(lowFpsThreshold)
-            drawLine(
-                color = c.textTertiary.copy(alpha = 0.45f),
-                start = Offset(plotLeft, y),
-                end = Offset(plotRight, y),
-                strokeWidth = with(density) { 1.dp.toPx() },
-                pathEffect = PathEffect.dashPathEffect(
-                    floatArrayOf(with(density) { 5.dp.toPx() }, with(density) { 5.dp.toPx() }),
-                ),
-            )
+            val nearestGrid = leftTicks
+                .map { kotlin.math.abs(plotBottom - plotH * (it / leftMax).coerceIn(0f, 1f) - y) }
+                .minOrNull() ?: Float.MAX_VALUE
+            val minGap = with(density) { 10.dp.toPx() }
+            if (nearestGrid >= minGap) {
+                drawLine(
+                    color = c.textTertiary.copy(alpha = 0.45f),
+                    start = Offset(plotLeft, y),
+                    end = Offset(plotRight, y),
+                    strokeWidth = with(density) { 1.dp.toPx() },
+                    pathEffect = PathEffect.dashPathEffect(
+                        floatArrayOf(with(density) { 5.dp.toPx() }, with(density) { 5.dp.toPx() }),
+                    ),
+                )
+            }
         }
+
+        // ---- 坐标系边框（实线）：上 + 右 ----
+        // 画在刻度之后、曲线之前：边框要压住网格虚线的两端，
+        // 但不能盖住曲线末端的数据点与标记圆。
+        drawAxisFrame(plotLeft, plotTop, plotRight, plotBottom, c.hairline)
 
         // ---- X 轴刻度 ----
         // 5 枚（原 3 枚）：长窗口下 3 枚刻度的间距过大，两个刻度之间的
