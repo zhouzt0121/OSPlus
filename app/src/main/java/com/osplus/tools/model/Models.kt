@@ -93,6 +93,37 @@ data class ProcessEntry(
     val packageName: String? = null,
 )
 
+/**
+ * 线程条目（线程监视器的数据源）。
+ *
+ * 与 [ProcessEntry] 是同一套字段的两级粒度：一个进程下挂着几十个线程，
+ * 因此这里多出 [tid]（线程号）与 [threadName]（线程名），
+ * [pid] 用来指明它属于谁。
+ *
+ * **[threadName] 来自 `/proc/<pid>/task/<tid>/comm`**，是内核记的线程名
+ * （`RenderEngine` / `HeapTaskDaemon` / `zygisk_lsposed` …），
+ * 一个线程一个、互不重复。
+ *
+ * **不要试图从 `top` 的 ARGS 列取线程名**：真机上同一进程的所有线程
+ * 在 `top -H` 里长得完全一样（surfaceflinger 的线程就全叫 `surfaceflinger`），
+ * 只有 TID 能区分。曾经的实现按「斜杠后是线程名」解析，真机上从不出现斜杠，
+ * 结果显示出 `data/adb/module` 这类被截断的路径片段。
+ *
+ * [processName] 不单独采集（`top` 侧无法区分参数与进程名，容易切错），
+ * 需要显示时由调用方用 [threadName] 足够表达——线程名本身就是最有信息量的字段。
+ */
+data class ThreadEntry(
+    val tid: Int,
+    val pid: Int,
+    val threadName: String,
+    val processName: String = "",
+    val user: String = "",
+    val cpuPercent: Float = 0f,
+    val rssKb: Long = 0L,
+    val state: String = "",
+    val packageName: String? = null,
+)
+
 /** 帧率采样快照 */
 data class FpsSample(
     val fps: Float = 0f,

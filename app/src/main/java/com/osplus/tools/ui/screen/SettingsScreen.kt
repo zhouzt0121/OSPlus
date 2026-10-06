@@ -82,6 +82,7 @@ fun SettingsScreen(
     onOpenSystemToggles: () -> Unit = {},
     onOpenPrivilege: () -> Unit = {},
     onOpenPredictiveBack: () -> Unit = {},
+    onOpenOverlayManager: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val c = osColors()
@@ -353,6 +354,11 @@ fun SettingsScreen(
                         title = "预测性返回",
                         summary = "跟手位移、缩放、圆角、回弹耗时等动画参数",
                         onClick = onOpenPredictiveBack,
+                    )
+                    SettingEntryRow(
+                        title = "悬浮窗管理器",
+                        summary = "负载 / 进程 / 线程 / 迷你 / 帧率记录 / 温度，6 个独立监视器悬浮窗",
+                        onClick = onOpenOverlayManager,
                     )
                 }
             }

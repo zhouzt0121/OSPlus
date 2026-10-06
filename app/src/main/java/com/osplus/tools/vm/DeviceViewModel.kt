@@ -16,6 +16,7 @@ import android.graphics.Canvas
 import android.graphics.Bitmap
 import android.content.ContentValues
 import android.util.Log
+import com.osplus.tools.core.FpsCardRenderer
 import com.osplus.tools.core.FpsOverlayState
 import android.provider.Settings
 import android.content.Context
@@ -25,12 +26,14 @@ import com.osplus.tools.core.BatteryDataSource
 import com.osplus.tools.core.BatteryEnergy
 import com.osplus.tools.core.CpuDataSource
 import com.osplus.tools.core.FpsRecorder
+import com.osplus.tools.core.FpsRecordingController
 import com.osplus.tools.core.FpsWatchStore
 import com.osplus.tools.core.FpsSessionStats
 import com.osplus.tools.core.SysFpsDataSource
 import com.osplus.tools.core.GpuDataSource
 import com.osplus.tools.core.LiveMetrics
 import com.osplus.tools.core.LiveNotif
+import com.osplus.tools.core.MonitorState
 import com.osplus.tools.core.NotifMetric
 import com.osplus.tools.core.PowerRecorder
 import com.osplus.tools.core.MemDataSource
@@ -52,6 +55,7 @@ import com.osplus.tools.core.SystemProbe
 import com.osplus.tools.core.SystemExtrasDataSource
 import com.osplus.tools.core.SystemTogglesDataSource
 import com.osplus.tools.service.FpsOverlayService
+import com.osplus.tools.service.MonitorOverlayService
 import com.osplus.tools.ui.theme.AppThemeMode
 import com.osplus.tools.model.BatteryInfo
 import com.osplus.tools.model.AppCpuPoint
@@ -227,6 +231,14 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         _monet.value = Preferences.isMonetEnabled(context)
         _zramResizeEnabled.value = Preferences.isZramResizeEnabled(context)
         FpsOverlayState.setAlpha(Preferences.overlayAlpha(context))
+
+        // 悬浮窗管理器：先把开关恢复到单例（服务订阅它），再按需拉起服务。
+        // 顺序不能反——服务在 onCreate 里立刻订阅 MonitorState.enabled，
+        // 若那时集合还是空的，已开启的监视器会一个都不建出来。
+        MonitorState.load(context)
+        if (MonitorState.enabled.value.isNotEmpty() && Settings.canDrawOverlays(context)) {
+            MonitorOverlayService.start(context)
+        }
         viewModelScope.launch {
             // 默认不提权：只有此前配置过模式才恢复。
             // 首次安装 / 开机自启时若强行探测，Root 会触发授权弹框而无人可点，
@@ -412,13 +424,21 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         val coreFreqs = CpuDataSource.readFreqs(cores)
         val fpsState = FpsRecorder.sample.value
         // 系统级帧率：只在「有人看」的时候才采，避免无谓地每秒起一个 shell 进程。
-        // 有人看 = 正在记录 / 帧率页可见（sysFpsWanted）/ **悬浮窗正在运行**。
+        // 有人看 = 正在记录 / 帧率页可见（sysFpsWanted）/ **悬浮窗正在运行**
+        //          / **悬浮窗管理器的监视器正在运行**。
         //
         // 悬浮窗必须算进来：它的全部意义就是「盖在别的应用上面看帧率」，
         // 那种场景下本应用自己的逐帧回调早已不代表屏幕实况，只靠它会把
         // 悬浮窗的数字带偏。少了这一条，悬浮窗会一直退回自身值。
+        //
+        // 监视器（MonitorState.running）同理，而且**更不能少**：
+        // 管理器可以只开温度/进程监视器而不开帧率悬浮窗，此时若不计入，
+        // sysFps 恒为 -1，迷你/负载监视器就会退回读 FpsRecorder 的自测值——
+        // 而应用退到后台后 Choreographer 回调不受 vsync 约束，
+        // 该值会飙到 500~600 这种物理上不可能的数字（实测 597.8）。
         val sysFps: Float = if (
-            FpsRecorder.recording.value || sysFpsWanted || FpsOverlayState.running.value
+            FpsRecorder.recording.value || sysFpsWanted ||
+            FpsOverlayState.running.value || MonitorState.running.value
         ) {
             runCatching { SysFpsDataSource.read() }.getOrNull() ?: -1f
         } else {
@@ -517,8 +537,9 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             // 内存侧只保留最近一段给「实时视图」用；**完整记录落 SQLite**，
             // 这样长录制（整局游戏）不再受 7200 条上限截断，杀进程也不丢。
             _fpsRecords.value = (_fpsRecords.value + record).takeLast(MAX_FPS_RECORDS)
-            val sid = activeSessionId
-            if (sid > 0L) fpsStore.addSample(sid, record)
+            // 落库统一走控制器：它持有 activeSessionId，且服务侧触发的录制
+            // 也会正常落库（ViewModel 与服务共享同一份会话状态）。
+            FpsRecordingController.addSample(context, record)
         }
 
         // 用同一次采样的结果同步刷新概览用的汇总数据，避免重复读取
@@ -693,15 +714,13 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------- 帧率记录会话化（SQLite 持久化） ----------------
 
-    /** 帧率记录的持久化存储 */
+    /** 帧率记录的持久化存储（查询/删除用；写入与录制生命周期见 [FpsRecordingController]） */
     private val fpsStore: FpsWatchStore by lazy { FpsWatchStore(context) }
 
-    /** 当前正在记录的会话 id；<=0 表示没有进行中的会话 */
-    @Volatile
-    private var activeSessionId: Long = -1L
-
-    /** 建会话的异步作业，用于让开始记录具备幂等性（见 [startFpsRecording]） */
-    private var startJob: Job? = null
+    // 注：`activeSessionId` 与 `startJob` 已迁到 [FpsRecordingController]。
+    // 原因是监视器悬浮窗（由 MonitorOverlayService 承载）也要能启停录制，
+    // 而服务拿不到 ViewModel；会话状态必须收敛到进程级单例，否则服务与
+    // ViewModel 各持一份、互相覆盖，会开出重复会话或丢数据。
 
     /** 历史会话列表（按开始时间倒序） */
     private val _fpsSessions = MutableStateFlow<List<FpsSession>>(emptyList())
@@ -713,6 +732,46 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _viewingSamples = MutableStateFlow<List<FpsRecord>>(emptyList())
     val viewingSamples: StateFlow<List<FpsRecord>> = _viewingSamples.asStateFlow()
+
+    // ---------------- 录制记录分析（独立整页） ----------------
+
+    /**
+     * 正在分析查看的会话 id；-1 表示没有。
+     *
+     * 之所以放到 ViewModel 而不是留在 FpsScreen 的 `remember`：分析卡现在是
+     * **独立路由页**，FpsScreen 与 FpsAnalysisScreen 是两个 Composable，
+     * 局部状态无法跨页传递，路由也不适合携带复杂参数。
+     */
+    private val _analysisSessionId = MutableStateFlow(-1L)
+    val analysisSessionId: StateFlow<Long> = _analysisSessionId.asStateFlow()
+
+    /** 该会话的统计摘要；打开分析页时异步加载 */
+    private val _analysisStats = MutableStateFlow<FpsSessionStats?>(null)
+    val analysisStats: StateFlow<FpsSessionStats?> = _analysisStats.asStateFlow()
+
+    /** 打开某会话的分析页：加载统计摘要 */
+    fun openFpsAnalysis(sessionId: Long) {
+        _analysisSessionId.value = sessionId
+        _analysisStats.value = null
+        viewModelScope.launch {
+            _analysisStats.value = fpsSessionStats(sessionId)
+        }
+    }
+
+    /** 关闭分析页时清空，避免下次进入残留上一次的数据 */
+    fun closeFpsAnalysis() {
+        _analysisSessionId.value = -1L
+        _analysisStats.value = null
+    }
+
+    /** 按包名解析应用显示名（用于分析卡顶栏、会话列表） */
+    fun appLabel(packageName: String?): String {
+        if (packageName.isNullOrBlank()) return ""
+        return runCatching {
+            val pm = context.packageManager
+            pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
+        }.getOrDefault(packageName)
+    }
 
     /** 系统级帧率（整机实测），-1 表示不可读 */
     private val _sysFps = MutableStateFlow(-1f)
@@ -776,6 +835,60 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _lastExportPath = MutableStateFlow<String?>(null)
     val lastExportPath: StateFlow<String?> = _lastExportPath.asStateFlow()
+
+    /** 分析卡图片导出后的落盘路径（null = 尚未导出） */
+    private val _lastCardPath = MutableStateFlow<String?>(null)
+    val lastCardPath: StateFlow<String?> = _lastCardPath.asStateFlow()
+
+    /**
+     * 把一次记录会话的分析卡渲染成 PNG 并写入相册。
+     *
+     * 用 [FpsCardRenderer] 精绘固定 1200×900（严格 4:3），而不是截界面上的
+     * Compose 卡片——导出的图尺寸与视觉不随屏幕密度、当前主题、页面状态
+     * 变化，用户在任意设备上得到的都是同一张图。
+     *
+     * @param cropLabel 屏幕分辨率字符串，形如 `540x1200`
+     */
+    fun exportFpsCard(session: FpsSession, stats: FpsSessionStats, cropLabel: String) {
+        viewModelScope.launch {
+            val path = withContext(Dispatchers.IO) {
+                val dark = when (_themeMode.value) {
+                    AppThemeMode.Dark -> true
+                    AppThemeMode.Light -> false
+                    // 跟随系统：读系统当前的深色开关（uiMode 的 night 位）
+                    AppThemeMode.System -> {
+                        val night = context.resources.configuration.uiMode and
+                            android.content.res.Configuration.UI_MODE_NIGHT_MASK
+                        night == android.content.res.Configuration.UI_MODE_NIGHT_YES
+                    }
+                }
+                val result: String? = runCatching {
+                    val bmp = FpsCardRenderer.render(session, stats, cropLabel, dark)
+                    val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                    val name = "OSPlus_fps_analysis_$stamp.png"
+                    val values = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                        put(
+                            MediaStore.Images.Media.RELATIVE_PATH,
+                            Environment.DIRECTORY_PICTURES + "/OSPlus",
+                        )
+                    }
+                    val uri = context.contentResolver
+                        .insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                        ?: return@runCatching null
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                    bmp.recycle()
+                    "图片/OSPlus/$name"
+                }.getOrNull()
+                result
+            }
+            _lastCardPath.value = path
+        }
+    }
+
 
     /** 悬浮窗服务的真实运行状态（不是偏好值） */
     val overlayRunning: StateFlow<Boolean> = FpsOverlayState.running
@@ -846,52 +959,35 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         LiveNotif.setMetrics(context, LiveNotif.defaultMetrics)
     }
 
+    /**
+     * 开始帧率记录。
+     *
+     * 完整流程（查前台包 → 建会话 → 打开采样）已收归
+     * [FpsRecordingController]——因为**服务侧的监视器悬浮窗也要能触发录制**，
+     * 而服务拿不到本 ViewModel。此处只做「关掉历史查看 + 委托」两件事。
+     */
     fun startFpsRecording() {
-        // 幂等：开会话是异步的，用户可能在它落定前又点一次开关
-        // （第一次点 = 开始，第二次点会先走 stop 再走 start）。
-        // 没有这道闸门会开出两个会话、或让第一次的会话永远挂在「未正常结束」。
-        if (startJob?.isActive == true) return
-        startJob = viewModelScope.launch {
-            val pkg = withContext(Dispatchers.IO) {
-                runCatching { ProcessDataSource.foregroundPackage(context) }.getOrNull()
-            }
-            val sid = withContext(Dispatchers.IO) { fpsStore.createSession(pkg) }
-            activeSessionId = sid
-            // 建会话失败（sid <= 0）时不打开记录开关：
-            // 否则会录一段「只在内存里、永远不落库」的数据，比不录更误导。
-            if (sid > 0L) {
-                closeFpsSession()
-                FpsRecorder.startRecording()
-            } else {
-                android.util.Log.e("OSPlusrFps", "建会话失败，拒绝开始记录")
-            }
-        }
+        closeFpsSession()
+        FpsRecordingController.start(context)
     }
 
+    /**
+     * 停止帧率记录并收尾会话。
+     *
+     * 同样委托给 [FpsRecordingController]：它会取消可能仍在进行的建会话作业、
+     * 写回 `time_end`，并通知会话列表刷新。
+     */
     fun stopFpsRecording() {
-        // 若会话还在建（用户点了开始又立刻点停止），先把建会话的作业停掉，
-        // 否则它稍后仍会把 `activeSessionId` 写回来并重新打开 recording ——
-        // 表现为「明明关了开关，过一会儿自己又开始录」。
-        startJob?.cancel()
-        startJob = null
-        FpsRecorder.stopRecording()
-        val sid = activeSessionId
-        activeSessionId = -1L
-        // 收尾：写入 time_end 与采样条数（Scene5 漏了这一步）
-        if (sid > 0L) {
-            viewModelScope.launch {
-                withContext(Dispatchers.IO) { fpsStore.endSession(sid) }
-                refreshFpsSessions()
-            }
-        }
+        FpsRecordingController.stop(context)
     }
 
     fun clearFpsRecords() {
-        startJob?.cancel()
-        startJob = null
+        // 先停掉录制再清库：否则每秒节拍仍在往一个刚被清空的会话里写数据，
+        // 用户会看到「清空后又冒出几条」。停录制交给控制器（它会收尾会话）。
+        FpsRecordingController.stop(context)
+        FpsRecordingController.resetState()
         _fpsRecords.value = emptyList()
         FpsRecorder.reset()
-        activeSessionId = -1L
         closeFpsSession()
         viewModelScope.launch {
             withContext(Dispatchers.IO) { fpsStore.clearAll() }
@@ -938,7 +1034,6 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------------- 应用图标 ----------------
-
     private val _appIcons = MutableStateFlow<Map<String, ImageBitmap>>(emptyMap())
     val appIcons: StateFlow<Map<String, ImageBitmap>> = _appIcons.asStateFlow()
 

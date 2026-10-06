@@ -410,6 +410,92 @@ object CpuDataSource {
         return null
     }
 
+    /**
+     * 分类温度读数（CPU 结温 / GPU 温度）。
+     *
+     * [read] 只返回一个「最贴近整颗 SoC 结温」的数，供 CPU 页展示用；
+     * 但温度监视器要**分别**列出 CPU 与 GPU —— 两者是不同的物理位置，
+     * 游戏时 GPU 往往比 CPU 更热，混成一个数会让人误判散热瓶颈在哪。
+     *
+     * 复用与 [pickCpuTemperature] 完全相同的一套 thermal zone 采集与打分；
+     * 区别只是这里按分数段分组取最高分：
+     * - CPU：分数 >= 60 的 zone（cpuss / soc / cpu-N）
+     * - GPU：分数 40 段（gpuss / gpu）
+     *
+     * 任一类读不到时对应字段为 null，界面据此显示 `--`——
+     * **绝不用另一类的值顶上**：把 GPU 温度填到 CPU 那一行，
+     * 在数值上完全无法自证身份。
+     */
+    suspend fun readTemperatures(): TemperatureBundle = withContext(Dispatchers.IO) {
+        val zones = readAllZones()
+        if (zones.isEmpty()) {
+            // 兜底：内核未导出 type 节点时按老路径读，只能当作 CPU 温度
+            val fallback = readFallbackTemperature()
+            return@withContext TemperatureBundle(cpuC = fallback, gpuC = null)
+        }
+
+        var cpu: Float? = null
+        var gpu: Float? = null
+        zones.forEach { (type, temp) ->
+            when (thermalTypePriority(type)) {
+                in 60..200 -> if (cpu == null || temp > cpu!!) cpu = temp
+                40 -> if (gpu == null || temp > gpu!!) gpu = temp
+            }
+        }
+        TemperatureBundle(cpuC = cpu, gpuC = gpu)
+    }
+
+    /** CPU 结温与 GPU 温度；读不到的项为 null */
+    data class TemperatureBundle(val cpuC: Float?, val gpuC: Float?)
+
+    /**
+     * 采回全部 thermal zone 的 `type to tempC`。
+     *
+     * 与 [readNodes] 里那段 thermal 采集是同一套脚本，但这里独立成方法：
+     * 温度监视器只需要温度，走 [read] 会把 CPU 频率、governor、
+     * `/proc/cpuinfo` 等一大串无关节点一起拉回来，白白多跑几十次读取。
+     */
+    private suspend fun readAllZones(): List<Pair<String, Float>> {
+        val script = buildString {
+            append("for z in /sys/class/thermal/thermal_zone*; do ")
+            append("t=\$(cat \$z/type 2>/dev/null); ")
+            append("v=\$(cat \$z/temp 2>/dev/null); ")
+            append("[ -n \"\$v\" ] && echo \"\$t|\$v\"; ")
+            append("done")
+        }
+        val out = Shell.run(script, root = true).stdout
+        if (out.isBlank()) return emptyList()
+
+        return out.lineSequence().mapNotNull { line ->
+            val parts = line.trim().split('|')
+            if (parts.size < 2) return@mapNotNull null
+            val type = parts[0].trim()
+            val raw = parts[1].trim().toFloatOrNull() ?: return@mapNotNull null
+            if (raw <= 0f) return@mapNotNull null
+            // 单位判定：部分内核给毫摄氏度（44000），部分是摄氏度（44）
+            val scaled = if (raw > 1000f) raw / 1000f else raw
+            // 合理性校验：SoC 温度不会超出这个区间，越界说明单位判断错了
+            if (scaled !in -20f..150f) return@mapNotNull null
+            if (type.isEmpty()) return@mapNotNull null
+            type to scaled
+        }.toList()
+    }
+
+    /** 老路径兜底（内核未导出 type 节点） */
+    private suspend fun readFallbackTemperature(): Float? {
+        val candidates = listOf(
+            "/sys/class/thermal/thermal_zone0/temp",
+            "/sys/class/hwmon/hwmon0/temp1_input",
+        )
+        for (path in candidates) {
+            val raw = Shell.readNode(path)?.trim()?.toFloatOrNull() ?: continue
+            if (raw <= 0f) continue
+            val scaled = if (raw > 1000f) raw / 1000f else raw
+            if (scaled in -20f..150f) return scaled
+        }
+        return null
+    }
+
     private suspend fun readAvailableGovernors(firstCore: Int): List<String> {
         // 部分机型在 policy 目录下才有该节点，两处都试
         val raw = Shell.readNode("$CPU_BASE/cpu$firstCore/cpufreq/scaling_available_governors")

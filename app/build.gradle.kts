@@ -9,7 +9,9 @@ android {
 
     defaultConfig {
         applicationId = "com.osplus.tools"
-        minSdk = 33
+        // minSdk 33 → 36：液态玻璃（AGSL RuntimeShader）与新的系统 API
+        // 按 Android 16（API 36）为目标基线收敛，不再向下兼容。
+        minSdk = 36
         targetSdk = 36
         // 1.3.0：信息架构改版（底栏四页 + 设置移出导航 + 统一顶栏 + 电源页提升为一级页）
         // 1.4.0：概览页指标改回圆环（CPU / GPU / 内存），电池卡换成帧率折线卡
@@ -81,8 +83,11 @@ android {
         //        有变化，修复后 38 帧连续变化。
         // 2.8.1：修复后手感仍因人而异——位移 / 缩放 / 圆角 / 回弹 / 压暗全部开放到
         //        设置 → 预测性返回，可在应用内实时调整，无需重启。
-        versionCode = 26
-        versionName = "2.8.1"
+        // 2.8.2：悬浮窗管理器 6 个监视器；录制记录分析（4:3 卡片 / 独立整页 / 应用图标）；
+        //        全站折线图加高、坐标系补全并加密刻度；帧率监视器极简化为「数值 + 点击切录制」；
+        //        minSdk 33 → 36（液态玻璃与新系统 API 以 Android 16 为基线，不再向下兼容）。
+        versionCode = 27
+        versionName = "2.8.2"
     }
 
     buildFeatures {

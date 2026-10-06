@@ -99,9 +99,11 @@ private fun fmtElapsed(ms: Long): String {
  * 帧率（一级页）：记录开关、悬浮窗、多档分析窗口与逐项趋势。
  *
  * 录制期间刻意不绘制图表，避免绘图开销污染正在测量的帧率数据。
+ *
+ * @param onOpenAnalysis 点会话列表的「分析」时调用，跳转到独立的分析整页
  */
 @Composable
-fun FpsScreen(vm: DeviceViewModel) {
+fun FpsScreen(vm: DeviceViewModel, onOpenAnalysis: () -> Unit = {}) {
     // 面板刷新率上限，作为帧率纵轴的常驻参照（见 Charts.frameRateMax）。
     // 变量名带 Hz 后缀以免遮蔽同名 composable。
     val panelHz = panelRefreshHz()
@@ -608,6 +610,22 @@ fun FpsScreen(vm: DeviceViewModel) {
                                     style = OsText.micro,
                                     color = c.primary,
                                     modifier = Modifier.clickable { vm.openFpsSession(s.id) },
+                                )
+                                Spacer(Modifier.width(14.dp))
+                                // 「分析」把该会话的统计摘要渲染成 4:3 卡片，
+                                // 但用的是**独立整页**（4:3 在整页宽度下才有
+                                // 足够高度，内嵌时会被卡片内边距挤扁）。
+                                // 统计由分析页通过 fpsSessionStats 单独查库获取，
+                                // 不复用 viewingSamples（那是降采样后的窗口数据，
+                                // 会算出偏小的方差与 5% Low）。
+                                Text(
+                                    text = "分析",
+                                    style = OsText.micro,
+                                    color = c.purple,
+                                    modifier = Modifier.clickable {
+                                        vm.openFpsAnalysis(s.id)
+                                        onOpenAnalysis()
+                                    },
                                 )
                                 Spacer(Modifier.width(14.dp))
                                 Text(

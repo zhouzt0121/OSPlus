@@ -274,7 +274,23 @@ class FpsWatchStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
         emptyList()
     }
 
-    /** 会话统计：均值 / 最小 / 最大帧率、低帧占比、高温占比 */
+    /**
+     * 会话统计：均值 / 最小 / 最大 / 方差、≥60FPS 占比、5% Low、
+     * 平均温度、平均功耗、低帧占比、高温占比。
+     *
+     * ## 口径说明（与 Scene5/PerfDog 对齐）
+     *
+     * - **VARIANCE**：总体方差（除以 N，非样本方差 N-1）。分析卡上要表现
+     *   「帧率抖动有多剧烈」，用总体方差更直观：全稳则 0，抖动越大越大。
+     * - **5% Low**：把全部帧率升序排列后取第 5 百分位的值。它回答的是
+     *   「最差的那 5% 坏到什么程度」——均值会被高帧率掩盖掉偶发卡顿，
+     *   这个指标专门用来暴露卡顿。
+     * - **≥60FPS (Smoothness)**：帧率 ≥60 的采样占比。注意分母是**全部**
+     *   采样，不含无效值（fps<=0 的记录在建表侧就被过滤了，见 samples()）。
+     *
+     * 全部统计在**一次 SELECT** 里完成，避免多次查库；排序因为要算百分位
+     * 必须拿到全量，但会话样本量级在几千条，内存里排完全没问题。
+     */
     fun statsOf(sessionId: Long): FpsSessionStats = runCatching {
         var count = 0
         var sum = 0.0
@@ -283,34 +299,77 @@ class FpsWatchStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
         var lowCount = 0
         var hotCount = 0
         var tempCount = 0
+        var sumSq = 0.0                       // Σfps² ，用于算方差
+        var smoothCount = 0                   // ≥60FPS 采样数
+        var tempSum = 0.0
+        var powerSum = 0.0
+        var powerCount = 0
+        val fpsList = ArrayList<Float>()
         readableDatabase.use { db ->
             db.rawQuery(
-                "select fps, battery_temp_c from history where session = ?",
+                "select fps, battery_temp_c, power_mw from history where session = ?",
                 arrayOf(sessionId.toString()),
             ).use { c ->
                 while (c.moveToNext()) {
                     val fps = c.getFloat(0)
                     count++
                     sum += fps
+                    sumSq += fps.toDouble() * fps
+                    fpsList.add(fps)
                     if (fps < min) min = fps
                     if (fps > max) max = fps
+                    if (fps >= SMOOTH_FPS_THRESHOLD) smoothCount++
                     if (fps in 0.01f..LOW_FPS_THRESHOLD) lowCount++
                     if (!c.isNull(1)) {
                         tempCount++
+                        tempSum += c.getFloat(1)
                         if (c.getFloat(1) > HOT_TEMP_THRESHOLD) hotCount++
+                    }
+                    if (!c.isNull(2)) {
+                        val p = c.getFloat(2)
+                        // 功耗列在无 root / 无电池节点时会是 0，不能当有效样本，
+                        // 否则平均功耗被硬拉低，卡片上显示一个假的「省电」。
+                        if (p > 0f) {
+                            powerCount++
+                            powerSum += p
+                        }
                     }
                 }
             }
         }
+        val avg = if (count > 0) (sum / count).toFloat() else 0f
+        // 总体方差 = E[x²] - (E[x])²。（浮点下可能算出极小负数，clamp 到 0）
+        val variance = if (count > 0) {
+            val v = (sumSq / count) - avg.toDouble() * avg
+            if (v < 0.0) 0f else v.toFloat()
+        } else 0f
+        val fivePercentLow = if (fpsList.isEmpty()) {
+            0f
+        } else {
+            fpsList.sort()
+            // 第 5 百分位：位置 = ceil(0.05 * N) - 1，至少取第 0 位（最小值）。
+            val idx = kotlin.math.ceil(fpsList.size * 0.05).toInt().coerceIn(1, fpsList.size) - 1
+            fpsList[idx]
+        }
         FpsSessionStats(
             count = count,
-            avg = if (count > 0) (sum / count).toFloat() else 0f,
+            avg = avg,
             min = if (count > 0 && min != Float.MAX_VALUE) min else 0f,
             max = max,
+            variance = variance,
+            smoothRatio = if (count > 0) smoothCount * 100f / count else 0f,
+            fivePercentLow = fivePercentLow,
+            avgTempC = if (tempCount > 0) (tempSum / tempCount).toFloat() else 0f,
+            avgPowerMw = if (powerCount > 0) (powerSum / powerCount).toFloat() else 0f,
             lowFpsRatio = if (count > 0) lowCount * 100f / count else 0f,
             hotRatio = if (tempCount > 0) hotCount * 100f / tempCount else 0f,
         )
-    }.getOrDefault(FpsSessionStats())
+    }.getOrElse { e ->
+        // 与 samples() 同样的理由：统计失败若静默返回全 0，卡片会画成
+        // 一张「全是 0」的假图，比报错更误导。
+        android.util.Log.e("OSPlusrFps", "statsOf($sessionId) 失败: ${e.message}", e)
+        FpsSessionStats()
+    }
 
     private fun parseFloats(s: String?): List<Float> =
         s?.takeIf { it.isNotEmpty() }?.split(',')?.mapNotNull { it.toFloatOrNull() } ?: emptyList()
@@ -327,15 +386,39 @@ class FpsWatchStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null,
 
         /** 高于该温度计入「高温占比」，与 Scene5 的 46 阈值对齐 */
         const val HOT_TEMP_THRESHOLD = 46f
+
+        /**
+         * 「流畅帧」阈值：帧率 ≥ 该值即计入 Smoothness（≥60FPS 占比）。
+         *
+         * 取 60 而非设备刷新率，是因为卡片要和 Scene5/PerfDog 的
+         * `≥60FPS` 口径一致——它对「能不能稳住 60 帧」这个玩家最关心的
+         * 问题最直观，也便于跨机型横向比较。
+         */
+        const val SMOOTH_FPS_THRESHOLD = 60f
     }
 }
 
-/** 一次记录会话的汇总统计 */
+/** 一次记录会话的统计摘要。
+ *
+ * 前 6 个字段（count/avg/min/max/lowFpsRatio/hotRatio）是原有维度，
+ * 后面 5 个是为「录制记录分析卡片」新增的——卡片版式对标 Scene5/PerfDog，
+ * 需要方差、≥60FPS 占比、5% Low、平均温度、平均功耗。
+ */
 data class FpsSessionStats(
     val count: Int = 0,
     val avg: Float = 0f,
     val min: Float = 0f,
     val max: Float = 0f,
+    /** 帧率**总体方差**（除以 N）。0 表示全程恒定，越大抖动越剧烈 */
+    val variance: Float = 0f,
+    /** 帧率 ≥60 的采样占比（%，卡片上标为 Smoothness） */
+    val smoothRatio: Float = 0f,
+    /** 第 5 百分位帧率（越小说明卡顿谷底越深） */
+    val fivePercentLow: Float = 0f,
+    /** 平均电池/结温（℃，无有效样本时为 0） */
+    val avgTempC: Float = 0f,
+    /** 平均功耗（mW，无有效样本时为 0） */
+    val avgPowerMw: Float = 0f,
     /** 低于 [FpsWatchStore.LOW_FPS_THRESHOLD] 的采样占比（%） */
     val lowFpsRatio: Float = 0f,
     /** 高于 [FpsWatchStore.HOT_TEMP_THRESHOLD] 的采样占比（%） */

@@ -60,6 +60,15 @@
                 android:value="OSPlus 帧率实时悬浮窗" />
         </service>
 
+        <service
+            android:name=".service.MonitorOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="OSPlus 悬浮窗管理器（负载/进程/线程/迷你/帧率记录/温度监视器）" />
+        </service>
+
         <receiver
             android:name=".receiver.BootReceiver"
             android:exported="true"

@@ -43,6 +43,7 @@ import com.osplus.tools.ui.components.OsTopBarPillAction
 import com.osplus.tools.ui.components.PageBackground
 import com.osplus.tools.ui.components.rememberPredictiveBackState
 import com.osplus.tools.ui.screen.CpuDetailScreen
+import com.osplus.tools.ui.screen.FpsAnalysisScreen
 import com.osplus.tools.ui.screen.FpsScreen
 import com.osplus.tools.ui.screen.LiquidLabScreen
 import com.osplus.tools.ui.screen.GpuDetailScreen
@@ -52,6 +53,7 @@ import com.osplus.tools.ui.screen.OverviewScreen
 import com.osplus.tools.ui.screen.PerfScreen
 import com.osplus.tools.ui.screen.PerfSchedScreen
 import com.osplus.tools.ui.screen.PowerScreen
+import com.osplus.tools.ui.screen.OverlayManagerScreen
 import com.osplus.tools.ui.screen.PredictiveBackScreen
 import com.osplus.tools.ui.screen.PrivilegeScreen
 import com.osplus.tools.ui.screen.ProcessDetailScreen
@@ -79,6 +81,8 @@ private const val RouteLiquidLab = "LiquidLab"
 private const val RouteSystemToggles = "SystemToggles"
 private const val RoutePrivilege = "Privilege"
 private const val RoutePredictiveBack = "PredictiveBack"
+private const val RouteOverlayManager = "OverlayManager"
+private const val RouteFpsAnalysis = "FpsAnalysis"
 
 private fun tabKey(tab: RootTab) = "tab-${tab.name}"
 
@@ -155,6 +159,8 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
             route == RouteSystemToggles -> "系统开关"
             route == RoutePrivilege -> "提权管理"
             route == RoutePredictiveBack -> "预测性返回"
+            route == RouteOverlayManager -> "悬浮窗管理器"
+            route == RouteFpsAnalysis -> "录制记录分析"
             detail != null -> detail.title
             rootTab == RootTab.Overview -> "概览"
             rootTab == RootTab.Perf -> "性能"
@@ -248,7 +254,10 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                     )
 
                                     RootTab.Perf -> PerfScreen(viewModel) { pushRoute(it.name) }
-                                    RootTab.Fps -> FpsScreen(viewModel)
+                                    RootTab.Fps -> FpsScreen(
+                                        viewModel,
+                                        onOpenAnalysis = { pushRoute(RouteFpsAnalysis) },
+                                    )
                                     RootTab.Power -> PowerScreen(viewModel)
                                 }
                             }
@@ -373,9 +382,17 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                                 onOpenPredictiveBack = {
                                                     pushRoute(RoutePredictiveBack)
                                                 },
+                                                onOpenOverlayManager = {
+                                                    pushRoute(RouteOverlayManager)
+                                                },
                                             )
 
                                             key == RoutePredictiveBack -> PredictiveBackScreen()
+
+                                            key == RouteOverlayManager -> OverlayManagerScreen()
+
+                                            key == RouteFpsAnalysis ->
+                                                FpsAnalysisScreen(viewModel)
 
                                             key == RouteLiquidLab -> LiquidLabScreen()
 

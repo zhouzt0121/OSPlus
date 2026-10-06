@@ -31,6 +31,8 @@ object Preferences {
     private const val KEY_BACK_CORNER_DP = "back_corner_dp"
     private const val KEY_BACK_SETTLE_MS = "back_settle_ms"
     private const val KEY_BACK_DIM_AMOUNT = "back_dim_amount"
+    private const val KEY_ENABLED_MONITORS = "enabled_monitors"
+    private const val KEY_MONITOR_ALPHA = "monitor_alpha"
 
     /** 悬浮窗位置尚未记录时的默认落点 */
     private const val OVERLAY_DEFAULT_X = 40
@@ -251,6 +253,72 @@ object Preferences {
 
     fun setBackDimAmount(context: Context, amount: Float) {
         sp(context).edit().putFloat(KEY_BACK_DIM_AMOUNT, amount.coerceIn(0f, 0.5f)).apply()
+    }
+
+    // ---------------- 悬浮窗管理器（6 个监视器） ----------------
+    //
+    // 每个监视器是独立窗口，位置各自持久化。key 由 MonitorKind.key 拼出，
+    // 因此新增监视器不需要在这里加常量——只要在枚举里加一项。
+
+    /**
+     * 已开启的监视器集合。
+     *
+     * 存 key 字符串而不是枚举序号：枚举顺序将来可能调整（本次就按信息密度排过），
+     * 存序号会悄悄错位成「用户开的是温度监视器，升级后变成了进程监视器」。
+     * 返回值里未知的 key 由 [MonitorState.load] 过滤掉。
+     */
+    fun enabledMonitors(context: Context): Set<MonitorKind> {
+        val raw = sp(context).getStringSet(KEY_ENABLED_MONITORS, emptySet()) ?: emptySet()
+        return MonitorKind.entries.filter { it.key in raw }.toSet()
+    }
+
+    fun setEnabledMonitors(context: Context, kinds: Set<MonitorKind>) {
+        sp(context).edit()
+            .putStringSet(KEY_ENABLED_MONITORS, kinds.map { it.key }.toSet())
+            .apply()
+    }
+
+    /** 监视器统一不透明度 0.25~1.0 */
+    fun monitorAlpha(context: Context): Float =
+        sp(context).getFloat(KEY_MONITOR_ALPHA, MonitorState.DEFAULT_ALPHA)
+            .coerceIn(MonitorState.MIN_ALPHA, 1f)
+
+    fun setMonitorAlpha(context: Context, alpha: Float) {
+        sp(context).edit()
+            .putFloat(KEY_MONITOR_ALPHA, alpha.coerceIn(MonitorState.MIN_ALPHA, 1f))
+            .apply()
+    }
+
+    /**
+     * 某个监视器窗口是否已被用户拖动过。
+     *
+     * 用来区分「用户从没碰过这个窗口」与「用户恰好把它拖到了默认坐标」：
+     * 前者应当跟随布局演进重算落点，后者必须原样保留。仅凭坐标值无法区分两者。
+     */
+    fun monitorPlaced(context: Context, kind: MonitorKind): Boolean =
+        sp(context).getBoolean(MonitorState.posKeyX(kind) + "_placed", false)
+
+    fun monitorX(context: Context, kind: MonitorKind): Int =
+        sp(context).getInt(MonitorState.posKeyX(kind), Int.MIN_VALUE)
+
+    fun monitorY(context: Context, kind: MonitorKind): Int =
+        sp(context).getInt(MonitorState.posKeyY(kind), Int.MIN_VALUE)
+
+    fun setMonitorPosition(context: Context, kind: MonitorKind, x: Int, y: Int) {
+        sp(context).edit()
+            .putInt(MonitorState.posKeyX(kind), x)
+            .putInt(MonitorState.posKeyY(kind), y)
+            .putBoolean(MonitorState.posKeyX(kind) + "_placed", true)
+            .apply()
+    }
+
+    /** 把某个监视器恢复到默认落点（管理器页的「重置位置」） */
+    fun clearMonitorPosition(context: Context, kind: MonitorKind) {
+        sp(context).edit()
+            .remove(MonitorState.posKeyX(kind))
+            .remove(MonitorState.posKeyY(kind))
+            .remove(MonitorState.posKeyX(kind) + "_placed")
+            .apply()
     }
 
     // 默认值取自 2.8.0 的实测手感：位移 32% 屏宽时底层主体完全可见，

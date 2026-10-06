@@ -85,6 +85,34 @@ fun spanText(seconds: Int): String {
     }
 }
 
+/**
+ * 把「窗口起点」标签折半，得到中点标签。
+ *
+ * [axisSpanLabel] 产出的形如 `-05:00`（5 分钟前）或 `-1:02:30`；
+ * 折半后是 `-02:30` / `-0:31:15`，正是时间轴中点应显示的文案。
+ * 无法解析（如「最早」「会话起点」这类非时间文案）时返回空串，
+ * 让刻度只保留首尾两个，不硬凑一个错的中间值。
+ */
+fun halveSpanLabel(label: String): String {
+    if (!label.startsWith("-")) return ""
+    val parts = label.substring(1).split(":")
+    return runCatching {
+        when (parts.size) {
+            2 -> {
+                val total = parts[0].toInt() * 60 + parts[1].toInt()
+                val half = total / 2
+                "-%02d:%02d".format(half / 60, half % 60)
+            }
+            3 -> {
+                val total = parts[0].toInt() * 3600 + parts[1].toInt() * 60 + parts[2].toInt()
+                val half = total / 2
+                "-%d:%02d:%02d".format(half / 3600, (half % 3600) / 60, half % 60)
+            }
+            else -> ""
+        }
+    }.getOrDefault("")
+}
+
 /** 统一图表配色 */
 object ChartColors {
     val cpu = Color(0xFF3B7BE0)
@@ -307,7 +335,10 @@ fun LineChart(
     maxValue: Float,
     color: Color,
     modifier: Modifier = Modifier,
-    height: Dp = 68.dp,
+    // 高度从 68 提到 108：原高度下曲线被压得只剩一条窄带，
+    // 波动的形状（尖峰、平台、缓慢漂移）看不出来——而「看形状」正是
+    // 折线图相对数字的唯一价值。宽度足够、只差纵向分辨率。
+    height: Dp = 108.dp,
     valueFormatter: (Float) -> String = { "%.0f".format(it) },
     /** 是否在顶部标注峰值。概览页的迷你折线不需要，数值由卡片头部承担 */
     showPeak: Boolean = true,
@@ -317,6 +348,14 @@ fun LineChart(
     unit: String = "",
     /** Y 轴刻度值的生成方式，默认按量程等分 5 档 */
     ticks: (Float) -> List<Float> = { axisTicks(it, 5) },
+    /**
+     * X 轴刻度标签。长度 ≥2 时按等距铺在底部并画刻度线；null/单元素时不画。
+     *
+     * 传的是**标签文本**而不是数值，因为本图不认识时间（只有 values 序列），
+     * 「这段曲线代表 30 秒还是 5 分钟」只有调用方知道。调用方把
+     * `["5 分钟前", "3 分钟前", "1 分钟前", "现在"]` 这类文本传进来即可。
+     */
+    xLabels: List<String>? = null,
 ) {
     val c = osColors()
     val safeMax = maxValue.coerceAtLeast(0.001f)
@@ -340,8 +379,11 @@ fun LineChart(
 
     Canvas(modifier = modifier.fillMaxWidth().height(height)) {
         val labelH = if (showPeak) with(density) { 14.dp.toPx() } else 0f
+        // X 轴刻度标签占用的底部高度：有标签时给 13dp（刻度线 3dp + 文字），
+        // 否则靠基线收尾。这段空间要从绘图区里扣掉，否则曲线会盖住标签。
+        val xAxisH = if (!xLabels.isNullOrEmpty()) with(density) { 13.dp.toPx() } else 0f
         val chartTop = labelH
-        val chartBottom = size.height
+        val chartBottom = size.height - xAxisH
         val chartH = (chartBottom - chartTop).coerceAtLeast(1f)
         val plotLeft = axisWidthPx
         val plotW = (size.width - plotLeft).coerceAtLeast(1f)
@@ -352,6 +394,10 @@ fun LineChart(
             return chartBottom - chartH * f
         }
 
+        // 网格线用虚线：与实线的坐标轴/曲线区分开，视觉上「网格退后、数据向前」。
+        val gridDash = PathEffect.dashPathEffect(
+            floatArrayOf(with(density) { 3.dp.toPx() }, with(density) { 3.dp.toPx() }),
+        )
         // Y 轴：网格线 + 刻度标签
         if (showYAxis) {
             tickValues.forEachIndexed { i, t ->
@@ -364,6 +410,7 @@ fun LineChart(
                         start = Offset(plotLeft, y),
                         end = Offset(size.width, y),
                         strokeWidth = 1f,
+                        pathEffect = gridDash,
                     )
                 }
                 drawText(
@@ -384,6 +431,31 @@ fun LineChart(
             end = Offset(size.width, chartBottom - 0.5f),
             strokeWidth = 1f,
         )
+
+        // X 轴刻度：底部短竖线 + 标签（等距铺开，首尾对齐绘图区两端）
+        if (!xLabels.isNullOrEmpty()) {
+            val n = xLabels.size
+            val tickLen = with(density) { 3.dp.toPx() }
+            xLabels.forEachIndexed { i, lb ->
+                val frac = if (n > 1) i.toFloat() / (n - 1) else 0.5f
+                val x = plotLeft + plotW * frac
+                // 刻度线：从基线往下 3dp
+                drawLine(
+                    color = c.hairline,
+                    start = Offset(x, chartBottom),
+                    end = Offset(x, chartBottom + tickLen),
+                    strokeWidth = 1f,
+                )
+                val tm = measurer.measure(lb, labelStyle)
+                // 标签居中于刻度线；两端夹在绘图区内，避免溢出被裁
+                val tx = (x - tm.size.width / 2f)
+                    .coerceIn(plotLeft, (size.width - tm.size.width).coerceAtLeast(plotLeft))
+                drawText(
+                    textLayoutResult = tm,
+                    topLeft = Offset(tx, chartBottom + tickLen + with(density) { 1.dp.toPx() }),
+                )
+            }
+        }
 
         // 面积填充
         val area = Path().apply {
@@ -457,6 +529,11 @@ fun MetricChartCard(
     /** 时间轴左端文案；调用方按实际窗口长度传入 [axisSpanLabel] 的结果 */
     axisStartLabel: String = "最早",
     /**
+     * 时间轴中点文案。默认由 [axisStartLabel] 折半推导
+     * （`-05:00` → `-02:30`）；推导不出时退化为「」不显示。
+     */
+    axisMidLabel: String = halveSpanLabel(axisStartLabel),
+    /**
      * Y 轴刻度值的生成方式。默认按量程等分 5 档；
      * 帧率场景传 `{ frameRateTicks(it) }`，刻度落在真实面板挡位上。
      */
@@ -506,6 +583,9 @@ fun MetricChartCard(
             }
         }
         Spacer(Modifier.height(7.dp))
+        // X 轴刻度：左端（窗口起点）/ 中点 / 右端（现在），共 3 枚。
+        // 原先只有首尾两个标签、且没有刻度线，曲线中段的读数无从对应——
+        // 想估「大约第几分钟掉的帧」只能凭感觉。中点标签把它钉住。
         LineChart(
             values = values,
             maxValue = maxValue,
@@ -513,14 +593,12 @@ fun MetricChartCard(
             valueFormatter = valueFormatter,
             unit = unit,
             ticks = yTicks,
+            xLabels = if (showAxis) {
+                listOf(axisStartLabel, axisMidLabel, "现在")
+            } else {
+                null
+            },
         )
-        if (showAxis) {
-            Spacer(Modifier.height(4.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(text = axisStartLabel, style = OsText.micro, color = c.textTertiary)
-                Text(text = "现在", style = OsText.micro, color = c.textTertiary)
-            }
-        }
     }
 }
 
@@ -818,11 +896,18 @@ fun MultiLineChart(
     series: List<MultiSeries>,
     maxValue: Float,
     modifier: Modifier = Modifier,
-    height: Dp = 92.dp,
+    // 多序列图原 92.dp，提升到 132：多条线挤在矮图里会互相缠绕，
+    // 分不清谁在上谁在下。加高后各线走向一目了然。
+    height: Dp = 132.dp,
     /** 是否画 Y 轴（刻度栏 + 网格线 + 数值标签） */
     showYAxis: Boolean = true,
     /** 各序列共用的单位，显示在图例标签后 */
     unit: String = "",
+    /**
+     * X 轴刻度标签（同 [LineChart.xLabels]）。长度 ≥2 时在底部画
+     * 刻度线 + 标签。
+     */
+    xLabels: List<String>? = null,
 ) {
     val c = osColors()
     val safeMax = maxValue.coerceAtLeast(0.001f)
@@ -831,6 +916,8 @@ fun MultiLineChart(
     val labelStyle = TextStyle(color = c.textTertiary, fontSize = 9.sp, fontWeight = FontWeight.Medium)
     val tickValues = remember(safeMax) { axisTicks(safeMax, 5) }
     val tickLabels = remember(tickValues) { tickValues.map { "%.0f".format(it) } }
+    // X 轴标签占用的底部高度（刻度线 3dp + 文字）
+    val xAxisH = if (!xLabels.isNullOrEmpty()) with(density) { 13.dp.toPx() } else 0f
     val axisWidthPx = remember(tickLabels, density) {
         if (!showYAxis) 0f
         else {
@@ -842,13 +929,17 @@ fun MultiLineChart(
     Column(modifier = modifier.fillMaxWidth()) {
         Canvas(Modifier.fillMaxWidth().height(height)) {
             val chartTop = 0f
-            val chartBottom = size.height
+            val chartBottom = size.height - xAxisH
             val chartH = (chartBottom - chartTop).coerceAtLeast(1f)
             val plotLeft = axisWidthPx
             val plotW = (size.width - plotLeft).coerceAtLeast(1f)
 
             fun yOf(v: Float): Float = chartBottom - chartH * (v / safeMax).coerceIn(0f, 1f)
 
+            // 网格线用虚线（与实线的坐标轴/曲线区分）
+            val gridDash = PathEffect.dashPathEffect(
+                floatArrayOf(with(density) { 3.dp.toPx() }, with(density) { 3.dp.toPx() }),
+            )
             if (showYAxis) {
                 tickValues.forEachIndexed { i, t ->
                     val y = yOf(t)
@@ -859,6 +950,7 @@ fun MultiLineChart(
                             start = Offset(plotLeft, y),
                             end = Offset(size.width, y),
                             strokeWidth = 1f,
+                            pathEffect = gridDash,
                         )
                     }
                     drawText(
@@ -878,6 +970,29 @@ fun MultiLineChart(
                 end = Offset(size.width, chartBottom - 0.5f),
                 strokeWidth = 1f,
             )
+
+            // X 轴刻度：底部短竖线 + 标签（与 LineChart 同款处理）
+            if (!xLabels.isNullOrEmpty()) {
+                val n = xLabels.size
+                val tickLen = with(density) { 3.dp.toPx() }
+                xLabels.forEachIndexed { i, lb ->
+                    val frac = if (n > 1) i.toFloat() / (n - 1) else 0.5f
+                    val x = plotLeft + plotW * frac
+                    drawLine(
+                        color = c.hairline,
+                        start = Offset(x, chartBottom),
+                        end = Offset(x, chartBottom + tickLen),
+                        strokeWidth = 1f,
+                    )
+                    val tm = measurer.measure(lb, labelStyle)
+                    val tx = (x - tm.size.width / 2f)
+                        .coerceIn(plotLeft, (size.width - tm.size.width).coerceAtLeast(plotLeft))
+                    drawText(
+                        textLayoutResult = tm,
+                        topLeft = Offset(tx, chartBottom + tickLen + with(density) { 1.dp.toPx() }),
+                    )
+                }
+            }
             series.forEach { s ->
                 val data = s.values
                 if (data.isEmpty()) return@forEach
@@ -957,10 +1072,13 @@ fun TimeSeriesChart(
     xMaxMs: Long,
     color: Color,
     modifier: Modifier = Modifier,
-    height: Dp = 156.dp,
+    // 原 156.dp → 208：这是主时序图（功耗详情页），曲线细节最多，
+    // 高度不够时采样点被挤成锯齿，看不出趋势段。
+    height: Dp = 208.dp,
     yMax: Float = 100f,
     yTicks: List<Float> = listOf(0f, 25f, 50f, 75f, 100f),
-    xTickCount: Int = 3,
+    // 3 → 5 枚：与原 3 枚刻度相比，每段时长更短、更易估读
+    xTickCount: Int = 5,
     xLabel: (Long) -> String = { ms -> "%d:%02d".format(ms / 60_000, (ms / 1000) % 60) },
     yLabel: (Float) -> String = { "%.0f".format(it) },
 ) {
@@ -975,7 +1093,7 @@ fun TimeSeriesChart(
 
     Canvas(modifier.fillMaxWidth().height(height)) {
         val leftPad = with(density) { 26.dp.toPx() }
-        val bottomPad = with(density) { 15.dp.toPx() }
+        val bottomPad = with(density) { 18.dp.toPx() }
         val topPad = with(density) { 4.dp.toPx() }
         val plotLeft = leftPad
         val plotRight = size.width
@@ -989,7 +1107,10 @@ fun TimeSeriesChart(
         fun xOf(ms: Long): Float = plotLeft + plotW * (ms / safeX).coerceIn(0f, 1f)
         fun yOf(v: Float): Float = plotBottom - plotH * (v / safeY).coerceIn(0f, 1f)
 
-        // Y 轴刻度 + 网格
+        // Y 轴刻度 + 网格（网格用虚线，与实线的坐标轴/曲线区分）
+        val gridDash = PathEffect.dashPathEffect(
+            floatArrayOf(with(density) { 3.dp.toPx() }, with(density) { 3.dp.toPx() }),
+        )
         yTicks.forEach { t ->
             val y = yOf(t)
             drawLine(
@@ -997,6 +1118,7 @@ fun TimeSeriesChart(
                 start = Offset(plotLeft, y),
                 end = Offset(plotRight, y),
                 strokeWidth = 1f,
+                pathEffect = gridDash,
             )
             val tm = measurer.measure(yLabel(t), labelStyle)
             drawText(
@@ -1008,15 +1130,21 @@ fun TimeSeriesChart(
             )
         }
 
-        // X 轴刻度
+        // X 轴刻度：短竖线 + 标签（原为只有标签、3 枚）
         repeat(xTickCount) { i ->
             val ms = xMaxMs * i / (xTickCount - 1).coerceAtLeast(1)
             val tm = measurer.measure(xLabel(ms), labelStyle)
             val tx = (xOf(ms) - tm.size.width / 2f)
                 .coerceIn(plotLeft, (plotRight - tm.size.width).coerceAtLeast(plotLeft))
+            drawLine(
+                color = c.hairline,
+                start = Offset(xOf(ms), plotBottom),
+                end = Offset(xOf(ms), plotBottom + with(density) { 3.dp.toPx() }),
+                strokeWidth = 1f,
+            )
             drawText(
                 textLayoutResult = tm,
-                topLeft = Offset(tx, plotBottom + with(density) { 2.dp.toPx() }),
+                topLeft = Offset(tx, plotBottom + with(density) { 4.dp.toPx() }),
             )
         }
 
@@ -1125,7 +1253,10 @@ fun DualAxisChart(
     right: AxisSeries?,
     xMaxMs: Long,
     modifier: Modifier = Modifier,
-    height: Dp = 168.dp,
+    // 原 168.dp → 224：这是帧率页的双轴主图，左轴帧率、右轴温度/负载，
+    // 两条线本就拥挤，且要能看清卡顿谷底（lowFpsThreshold 那条虚线
+    // 与曲线的间距）。加高后双轴各自的分辨率都更充分。
+    height: Dp = 224.dp,
     leftUnit: String = "FPS",
     rightUnit: String = "",
     lowFpsThreshold: Float = 45f,
@@ -1148,7 +1279,7 @@ fun DualAxisChart(
     Canvas(modifier.fillMaxWidth().height(height)) {
         val leftPad = with(density) { 30.dp.toPx() }
         val rightPad = with(density) { 34.dp.toPx() }
-        val bottomPad = with(density) { 15.dp.toPx() }
+        val bottomPad = with(density) { 18.dp.toPx() }
         val topPad = with(density) { 6.dp.toPx() }
         val plotLeft = leftPad
         val plotRight = size.width - rightPad
@@ -1233,14 +1364,23 @@ fun DualAxisChart(
         }
 
         // ---- X 轴刻度 ----
-        repeat(3) { i ->
-            val ms = xMaxMs * i / 2
+        // 5 枚（原 3 枚）：长窗口下 3 枚刻度的间距过大，两个刻度之间的
+        // 时段长度要靠心算，加密后每段时长一眼可估。
+        repeat(5) { i ->
+            val ms = xMaxMs * i / 4
             val tm = measurer.measure(xLabel(ms), labelStyle)
             val tx = (xOfMs(ms) - tm.size.width / 2f)
                 .coerceIn(plotLeft, (plotRight - tm.size.width).coerceAtLeast(plotLeft))
+            // 刻度线：基线往下 3dp，让刻度点和曲线起点对齐看得见
+            drawLine(
+                color = c.hairline,
+                start = Offset(xOfMs(ms), plotBottom),
+                end = Offset(xOfMs(ms), plotBottom + with(density) { 3.dp.toPx() }),
+                strokeWidth = 1f,
+            )
             drawText(
                 textLayoutResult = tm,
-                topLeft = Offset(tx, plotBottom + with(density) { 2.dp.toPx() }),
+                topLeft = Offset(tx, plotBottom + with(density) { 4.dp.toPx() }),
             )
         }
 
