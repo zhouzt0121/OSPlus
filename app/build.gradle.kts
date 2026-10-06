@@ -61,14 +61,28 @@ android {
         //        ① 层级重构：一级页提升为**常驻底层**，二级/三级页改为盖在其上的
         //           全屏浮层。改造前两级页面共用同一个 AnimatedContent 插槽，
         //           手势让开之后底下没有任何内容，接预测性返回会直接露底；
-        //        ② 新增 PredictiveBack.kt：从 NavigationEventTransitionState.InProgress
-        //           取出手势进度（NavigationBackHandler 本身只给完成/取消两个终态），
-        //           手势中吃实时值保证零延迟跟手，结束后由 Animatable 平滑收尾；
+        //        ② 新增 PredictiveBack.kt：取出手势进度，手势中吃实时值保证零延迟跟手，
+        //           结束后由 Animatable 平滑收尾；
         //        ③ 浮层跟手右移（屏幕宽 32%）+ 圆角渐显 + 缩放 0.94 + 轻微压暗，
         //           底栏随浮层让开同步淡入；
         //        ④ 移除 2.7.0 遗留的实测结论：`AnimatedContent` 单插槽方案
-        versionCode = 25
-        versionName = "2.8.0"
+        // 2.8.1：修复预测性返回**完全没有跟手动画**（实测：日志里 progress 在平滑变化，
+        //        屏幕却纹丝不动，松手瞬间才跳变）。两个叠加的根因：
+        //        ① API 选错：原用 `navigationevent-compose` 的 NavigationBackHandler，
+        //           它注册的是 PRIORITY_DEFAULT 回调，按官方文档会**抑制系统自身的
+        //           预测性返回动画**，却又不是面向动画的 API。改用官方
+        //           `androidx.activity.compose.PredictiveBackHandler`（直接给
+        //           Flow<BackEventCompat>，progress 即跟手进度）；
+        //        ② 进度读在组合函数体里：`val backProgress = backState.progress`
+        //           只在组合那一刻取值一次，手势期间不会变化，因此 graphicsLayer
+        //           永不失效、屏幕不重绘。改为在 graphicsLayer 的 lambda **内部**读，
+        //           让读取发生在绘制阶段。
+        //        排查方法（可复用）：Python 逐帧比较录屏帧间差异，修复前整段 0 帧
+        //        有变化，修复后 38 帧连续变化。
+        // 2.8.1：修复后手感仍因人而异——位移 / 缩放 / 圆角 / 回弹 / 压暗全部开放到
+        //        设置 → 预测性返回，可在应用内实时调整，无需重启。
+        versionCode = 26
+        versionName = "2.8.1"
     }
 
     buildFeatures {

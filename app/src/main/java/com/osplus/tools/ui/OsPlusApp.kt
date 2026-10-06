@@ -52,6 +52,7 @@ import com.osplus.tools.ui.screen.OverviewScreen
 import com.osplus.tools.ui.screen.PerfScreen
 import com.osplus.tools.ui.screen.PerfSchedScreen
 import com.osplus.tools.ui.screen.PowerScreen
+import com.osplus.tools.ui.screen.PredictiveBackScreen
 import com.osplus.tools.ui.screen.PrivilegeScreen
 import com.osplus.tools.ui.screen.ProcessDetailScreen
 import com.osplus.tools.ui.screen.SettingsScreen
@@ -77,6 +78,7 @@ private const val RouteSettings = "Settings"
 private const val RouteLiquidLab = "LiquidLab"
 private const val RouteSystemToggles = "SystemToggles"
 private const val RoutePrivilege = "Privilege"
+private const val RoutePredictiveBack = "PredictiveBack"
 
 private fun tabKey(tab: RootTab) = "tab-${tab.name}"
 
@@ -131,16 +133,16 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
 
         // 预测性返回：优先退二级路由 → 其次回概览 → 已在概览则交还系统执行退出动画。
         //
-        // 这里用 rememberPredictiveBackState 而不是裸的 NavigationBackHandler，
-        // 因为需要**手势进度**来驱动覆盖层的跟手位移（见下方 backProgress）。
+        // 用官方 androidx.activity.compose.PredictiveBackHandler 实现。
+        // 注意：进度**不要**在这里取成局部 val 再用 —— 那样读到的是本次组合的
+        // 静态快照，手势期间不会触发重绘，屏幕会纹丝不动（2.8.0 的 bug）。
+        // 正确做法是让渲染侧（graphicsLayer 的 lambda）直接读 backState.progress，
+        // 把读取放到绘制阶段。详见 PredictiveBack.kt 类注释。
         val backState = rememberPredictiveBackState(
             isBackEnabled = route != null || rootTab != RootTab.Overview,
         ) {
             if (routeStack.isNotEmpty()) popRoute() else rootTab = RootTab.Overview
         }
-        // 0f = 完全展开（覆盖层铺满），1f = 已退回（覆盖层让开）。
-        // 手势进行中由系统给的实时进度驱动，松手后由内部动画器平滑收尾。
-        val backProgress = backState.progress
 
         // 二级/三级页的 AnimatedContent key。
         // 取栈顶路由即可：栈内切换（设置 → 系统开关）也走这个 key，
@@ -152,6 +154,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
             settingsOpen -> "设置"
             route == RouteSystemToggles -> "系统开关"
             route == RoutePrivilege -> "提权管理"
+            route == RoutePredictiveBack -> "预测性返回"
             detail != null -> detail.title
             rootTab == RootTab.Overview -> "概览"
             rootTab == RootTab.Perf -> "性能"
@@ -284,7 +287,9 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                 backdrop = backdrop,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .graphicsLayer { alpha = 1f - backProgress },
+                    // 直接读状态，不经过局部变量：让读取发生在绘制阶段，
+                    // 手势期间每次进度变化才能让这个 layer 失效并重绘。
+                    .graphicsLayer { alpha = 1f - backState.progress },
             )
 
             // ── 上层：二级/三级路由浮层 ───────────────────────────────────
@@ -292,8 +297,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
             // 只在存在路由时存在。整层跟手右移 + 圆角化 + 轻微缩小，
             // 缩小量给底层一点点「露出感」，是 Android 14 原生返回预览的观感。
             //
-            // 位移量是屏幕宽度的 32%：走满 32% 时覆盖层基本让开、
-            // 底层页面主体完全可见，同时手指不需要拖到屏幕另一头。
+            // 各项幅度都可在 设置 → 预测性返回 里实时调整。
             if (route != null) {
                 // 位移基准取屏幕宽度。用 LocalConfiguration 的 dp 值换算，
                 // 而不是读 Layout 尺寸——后者在首帧拿不到，会导致第一次手势位移为 0。
@@ -301,7 +305,7 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                 val screenWidthPx = with(density) {
                     LocalConfiguration.current.screenWidthDp.dp.toPx()
                 }
-                val maxCorner = remember { 28.dp }
+                val tuning = backState.tuning
 
                 // **录制节点必须留在变换子树之外。**
                 //
@@ -317,16 +321,23 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                     Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            translationX = backProgress * screenWidthPx * 0.32f
-                            val scale = 1f - backProgress * 0.06f
+                            // 进度必须在 lambda **内部**读。
+                            // lambda 每次重绘都会执行，读到的永远是最新值；
+                            // 而写在组合函数体里的 `val p = state.progress` 只在
+                            // 组合那一刻取值一次，手势期间不会变化（2.8.0 的 bug）。
+                            val p = backState.progress
+                            translationX = p * screenWidthPx * tuning.translationRatio
+                            val scale = 1f - p * tuning.scaleAmount
                             scaleX = scale
                             scaleY = scale
-                            // 圆角随进度长出来。静止态（progress=0）圆角为 0，
+                            // 圆角随进度长出来。静止态（p=0）圆角为 0，
                             // 页面四角不会被切；只有手势真的开始推才逐渐变圆。
-                            shape = RoundedCornerShape(maxCorner * backProgress)
-                            clip = backProgress > 0.001f
+                            shape = RoundedCornerShape(
+                                tuning.cornerRadiusDp.dp * p,
+                            )
+                            clip = p > 0.001f
                             // 让开时轻微压暗，强化「它在被推走」的层次
-                            alpha = 1f - backProgress * 0.12f
+                            alpha = 1f - p * tuning.dimAmount
                         },
                 ) {
                     // 内容层：**不再挂 layerBackdrop**。
@@ -359,7 +370,12 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                                     pushRoute(RouteSystemToggles)
                                                 },
                                                 onOpenPrivilege = { pushRoute(RoutePrivilege) },
+                                                onOpenPredictiveBack = {
+                                                    pushRoute(RoutePredictiveBack)
+                                                },
                                             )
+
+                                            key == RoutePredictiveBack -> PredictiveBackScreen()
 
                                             key == RouteLiquidLab -> LiquidLabScreen()
 

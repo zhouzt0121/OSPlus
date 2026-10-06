@@ -26,6 +26,11 @@ object Preferences {
     private const val KEY_NOTIF_KEEPALIVE = "notif_keepalive_enabled"
     private const val KEY_ZRAM_RESIZE = "zram_resize_enabled"
     private const val KEY_PRIVILEGE_MODE = "privilege_mode"
+    private const val KEY_BACK_TRANSLATION_RATIO = "back_translation_ratio"
+    private const val KEY_BACK_SCALE_AMOUNT = "back_scale_amount"
+    private const val KEY_BACK_CORNER_DP = "back_corner_dp"
+    private const val KEY_BACK_SETTLE_MS = "back_settle_ms"
+    private const val KEY_BACK_DIM_AMOUNT = "back_dim_amount"
 
     /** 悬浮窗位置尚未记录时的默认落点 */
     private const val OVERLAY_DEFAULT_X = 40
@@ -199,4 +204,60 @@ object Preferences {
     fun setPowerSerialDualCell(context: Context, enabled: Boolean) {
         sp(context).edit().putBoolean(KEY_POWER_DUAL_CELL, enabled).apply()
     }
+
+    // ---------------- 预测性返回动画参数 ----------------
+    //
+    // 手势位移量没有「唯一正确值」：屏幕尺寸、刷新率、个人手感偏好都会影响观感。
+    // 固定常量只能取一个折中值，所以开放成可调项，让用户按自己手感微调。
+    // 全部在 settings 页即时生效（读取发生在 graphicsLayer 的绘制阶段，改完下一帧就变）。
+
+    /** 手势走满时的水平位移，占屏幕宽度的比例，0~1 */
+    fun backTranslationRatio(context: Context): Float =
+        sp(context).getFloat(KEY_BACK_TRANSLATION_RATIO, DEFAULT_BACK_TRANSLATION_RATIO)
+            .coerceIn(0f, 1f)
+
+    fun setBackTranslationRatio(context: Context, ratio: Float) {
+        sp(context).edit().putFloat(KEY_BACK_TRANSLATION_RATIO, ratio.coerceIn(0f, 1f)).apply()
+    }
+
+    /** 手势走满时的缩放量（1 - 该值 = 最终缩放），0~0.3 */
+    fun backScaleAmount(context: Context): Float =
+        sp(context).getFloat(KEY_BACK_SCALE_AMOUNT, DEFAULT_BACK_SCALE_AMOUNT)
+            .coerceIn(0f, 0.3f)
+
+    fun setBackScaleAmount(context: Context, amount: Float) {
+        sp(context).edit().putFloat(KEY_BACK_SCALE_AMOUNT, amount.coerceIn(0f, 0.3f)).apply()
+    }
+
+    /** 手势走满时的圆角半径上限，单位 dp，0~64 */
+    fun backCornerRadiusDp(context: Context): Float =
+        sp(context).getFloat(KEY_BACK_CORNER_DP, DEFAULT_BACK_CORNER_DP).coerceIn(0f, 64f)
+
+    fun setBackCornerRadiusDp(context: Context, dp: Float) {
+        sp(context).edit().putFloat(KEY_BACK_CORNER_DP, dp.coerceIn(0f, 64f)).apply()
+    }
+
+    /** 取消手势后的回弹耗时，单位毫秒，60~800 */
+    fun backSettleDurationMs(context: Context): Int =
+        sp(context).getInt(KEY_BACK_SETTLE_MS, DEFAULT_BACK_SETTLE_MS).coerceIn(60, 800)
+
+    fun setBackSettleDurationMs(context: Context, ms: Int) {
+        sp(context).edit().putInt(KEY_BACK_SETTLE_MS, ms.coerceIn(60, 800)).apply()
+    }
+
+    /** 手势走满时的压暗量，0~0.5 */
+    fun backDimAmount(context: Context): Float =
+        sp(context).getFloat(KEY_BACK_DIM_AMOUNT, DEFAULT_BACK_DIM_AMOUNT).coerceIn(0f, 0.5f)
+
+    fun setBackDimAmount(context: Context, amount: Float) {
+        sp(context).edit().putFloat(KEY_BACK_DIM_AMOUNT, amount.coerceIn(0f, 0.5f)).apply()
+    }
+
+    // 默认值取自 2.8.0 的实测手感：位移 32% 屏宽时底层主体完全可见，
+    // 且手指不必拖到屏幕另一头；缩放 6% 只给一点「退后」层次，再多会显得夸张。
+    const val DEFAULT_BACK_TRANSLATION_RATIO = 0.32f
+    const val DEFAULT_BACK_SCALE_AMOUNT = 0.06f
+    const val DEFAULT_BACK_CORNER_DP = 28f
+    const val DEFAULT_BACK_SETTLE_MS = 200
+    const val DEFAULT_BACK_DIM_AMOUNT = 0.12f
 }

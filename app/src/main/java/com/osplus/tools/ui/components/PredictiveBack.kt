@@ -1,5 +1,6 @@
 package com.osplus.tools.ui.components
 
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
@@ -7,69 +8,116 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.geometry.Offset
-import androidx.navigationevent.NavigationEventInfo
-import androidx.navigationevent.NavigationEventTransitionState
-import androidx.navigationevent.compose.NavigationBackHandler
-import androidx.navigationevent.compose.rememberNavigationEventState
+import androidx.compose.ui.platform.LocalContext
+import com.osplus.tools.core.Preferences
+import kotlinx.coroutines.CancellationException
 
 /**
- * 预测性返回（Predictive Back）在 Compose 侧的手势进度状态。
+ * 预测性返回（Predictive Back）的跟手动画参数。
  *
- * ### 为什么需要这层封装
+ * 这些值**没有唯一正确解**：屏幕尺寸、刷新率、以及个人对「跟手」的容忍度
+ * 都会影响观感。固定常量只能取一个折中值，所以全部开放到
+ * 设置 → 预测性返回 里，改动即时生效。
  *
- * `NavigationBackHandler` 只给「返回完成 / 返回取消」两个终态回调，
- * 滑动过程中的**进度**不在它的参数里。而预测性返回的全部价值恰恰在于过程：
- * 手指从屏幕边缘往右拖时，界面要跟手让开，用户能看到上一页正从左侧回来。
- * 拿不到进度，就退化成「松手才切换」，与 Android 13 之前没有区别。
+ * 每次手势开始时从持久化存储读一次并缓存到组合中；
+ * 中途改设置不会打断正在进行的手势。
+ */
+data class BackAnimationTuning(
+    /** 手势走满时的水平位移，占屏幕宽度的比例 */
+    val translationRatio: Float,
+    /** 手势走满时的缩放量（1 - 该值 = 最终缩放） */
+    val scaleAmount: Float,
+    /** 手势走满时的圆角上限（dp） */
+    val cornerRadiusDp: Float,
+    /** 取消后的回弹耗时（毫秒） */
+    val settleDurationMs: Int,
+    /** 手势走满时的压暗量 */
+    val dimAmount: Float,
+) {
+    companion object {
+        /** 与 Preferences 的出厂默认值保持一致；用作参数注入前的占位值。 */
+        val Default = BackAnimationTuning(
+            translationRatio = Preferences.DEFAULT_BACK_TRANSLATION_RATIO,
+            scaleAmount = Preferences.DEFAULT_BACK_SCALE_AMOUNT,
+            cornerRadiusDp = Preferences.DEFAULT_BACK_CORNER_DP,
+            settleDurationMs = Preferences.DEFAULT_BACK_SETTLE_MS,
+            dimAmount = Preferences.DEFAULT_BACK_DIM_AMOUNT,
+        )
+
+        fun from(context: android.content.Context) = BackAnimationTuning(
+            translationRatio = Preferences.backTranslationRatio(context),
+            scaleAmount = Preferences.backScaleAmount(context),
+            cornerRadiusDp = Preferences.backCornerRadiusDp(context),
+            settleDurationMs = Preferences.backSettleDurationMs(context),
+            dimAmount = Preferences.backDimAmount(context),
+        )
+    }
+}
+
+/**
+ * 预测性返回在 Compose 侧的手势进度状态。
  *
- * 进度实际藏在 `state.transitionState` 里——
- * `InProgress.latestEvent.progress`（0f~1f）以及 `touchX / touchY / swipeEdge`。
- * 本类型把它抽出来并统一负责两件事：
+ * ### 为什么用 [PredictiveBackHandler] 而不是 `NavigationBackHandler`
  *
- * 1. 订阅 `transitionState`，把进度写进 [progress]；
- * 2. 手势终止后，用 `Animatable` 把进度**平滑**送回 0（取消）或 1（完成），
- *    不做瞬变，避免「啪」地跳回去。
+ * 这是 2.8.0 踩过的一个**方向性错误**，记录在此以免回退：
  *
- * ### 与系统的分工
+ * 最初用的是 `androidx.navigationevent.compose.NavigationBackHandler`。
+ * 它是**事件路由** API——只负责「这次返回该由谁处理」。用它有两个致命问题：
  *
- * `isBackEnabled = false` 时系统不会把手势交给本处理器，
- * 一级页边缘右滑会回落给系统执行「预测性返回桌面」——这正是官方期望的行为，
- * 不要在这里拦。
+ * 1. 它注册的是默认优先级的 `OnBackInvokedCallback`。官方文档明确说明：
+ *    应用一旦注册了 `PRIORITY_DEFAULT` / `PRIORITY_OVERLAY` 的回调，
+ *    **系统自己的预测性返回动画就不会再播**，必须由应用自己画完整个过程。
+ * 2. 它没有面向动画的设计。进度虽能从 `InProgress.latestEvent.progress` 取到，
+ *    但配合 `graphicsLayer` 写变换时极易踩「状态读取没触发 layer 失效」的坑，
+ *    表现为**日志里 progress 在变、屏幕上却纹丝不动**，最终只剩松手瞬间的跳变。
  *
- * 用 [rememberPredictiveBackState] 创建，生命周期由组合管理，无需手动清理。
+ * 官方给 Compose 动画场景提供的 API 是 `androidx.activity.compose.PredictiveBackHandler`，
+ * 它直接给出 `Flow<BackEventCompat>`，`backEvent.progress` 就是跟手进度。
+ *
+ * ### 两个必须遵守的约束
+ *
+ * 1. **`progress` 只能在 `graphicsLayer` / `drawBehind` 的 lambda 里读**，
+ *    不要在组合函数体里先 `val p = state.progress` 再传给 lambda——
+ *    那样读到的是**本次组合快照的值**，后续变化不会让 layer 失效，
+ *    屏幕就不会重绘（这正是 2.8.0 的 bug）。
+ * 2. **收尾动画结束后必须把 `progress` 归零**，否则下一次手势会从上次残值开始。
  */
 class PredictiveBackState internal constructor() {
     /**
-     * 对外暴露的进度：0f 完全展开 ~ 1f 已退回。
+     * 跟手进度：0f 完全展开 ~ 1f 已退回。
      *
-     * 只有**一个**状态源，不设「手势值 + 动画值」两份。
-     * 手势进行中由 [rememberPredictiveBackState] 直接写入系统给的实时值（零延迟跟手）；
-     * 手势结束后由 `Animatable` 把同一个值平滑推回 0（取消）或 1（完成）。
-     * 两份分开写会让两个写入方互相打架——收尾动画会把实时值往回拽，
-     * 表现为跟手迟滞。这是 2.8.0 初版的错误写法，此处已收敛。
+     * 手势进行中由系统下发的 `BackEventCompat.progress` 直接写入（零延迟跟手）；
+     * 手势取消后由 `Animatable` 平滑推回 0。
+     *
+     * **渲染侧务必在 `graphicsLayer` / `drawBehind` 的 lambda 内直接读本属性**。
      */
     var progress by mutableFloatStateOf(0f)
         internal set
 
-    /** 手势是否进行中。决定覆盖层是**跟手绘制**还是走常规进出场动画。 */
+    /** 手势是否进行中。用于区分「跟手绘制」与「常规进出场动画」。 */
     var isInProgress by mutableStateOf(false)
         internal set
 
     /** 手指当前坐标（屏幕坐标系，像素）。可驱动「返回箭头跟手」这类效果。 */
     var touch by mutableStateOf(Offset.Zero)
         internal set
+
+    /** 当前生效的动画参数。由 [rememberPredictiveBackState] 注入。 */
+    internal var tuning by mutableStateOf(BackAnimationTuning.Default)
+        internal set
 }
 
 /**
- * 创建与 [NavigationBackHandler] 联动、并额外暴露手势进度的返回状态。
+ * 创建暴露手势进度的预测性返回状态，并读取设置的动画参数。
  *
- * @param isBackEnabled 当前是否**可以**返回。传 false 时系统不把返回手势
- *   交给本处理器——一级页且无二级路由时，手势会回落给系统做「预测性返回桌面」。
+ * @param isBackEnabled 当前是否**可以**返回。传 false 时不接管手势，
+ *   系统会自己播「预测性返回桌面」——一级页就该是这个行为，不要在这里拦。
  * @param onBack 手势越过阈值、确认返回时执行，这里是**真正弹路由栈**的地方。
  */
 @Composable
@@ -77,65 +125,54 @@ fun rememberPredictiveBackState(
     isBackEnabled: Boolean,
     onBack: () -> Unit,
 ): PredictiveBackState {
+    val context = LocalContext.current
     val state = remember { PredictiveBackState() }
-    val navState = rememberNavigationEventState(NavigationEventInfo.None)
 
-    // 订阅进度。LaunchedEffect 的协程随组合销毁而取消，
-    // snapshotFlow 会一直收集 transitionState 的变化。
-    //
-    // 这里**只写实时值，不碰动画**：写入方与收尾方必须是两条互斥的路径，
-    // 否则同一帧内两个写入者会互相覆盖（详见 PredictiveBackState.progress 注释）。
-    LaunchedEffect(navState) {
-        snapshotFlow { navState.transitionState }.collect { transition ->
-            if (transition is NavigationEventTransitionState.InProgress) {
-                val event = transition.latestEvent
-                state.progress = event.progress.coerceIn(0f, 1f)
-                state.touch = Offset(event.touchX, event.touchY)
-                state.isInProgress = true
-            } else if (state.isInProgress) {
-                // Idle：手势终止但**没有**走 onBackCompleted（即取消）。
-                // 只翻标志位，实际的回弹动画交给下面那个 LaunchedEffect。
-                state.isInProgress = false
-            }
-        }
+    // 注入参数。LaunchedEffect 在进入组合时跑一次；每次从设置页返回、
+    // 组合重新进入时会再跑（remember 的 state 不变，但 tuning 会刷新）。
+    // 这样「改完设置 → 返回 → 手势」立刻就是新参数。
+    LaunchedEffect(Unit) {
+        state.tuning = BackAnimationTuning.from(context)
     }
 
-    // 收尾动画：手势结束后把进度平滑送回 0。
-    //
-    // 用动画器（而非直接 snapTo(0f)）是因为取消时覆盖层要「弹」回原位，
-    // 瞬变会显得突兀。key 是 isInProgress，只在收尾那一刻启动一次。
-    //
-    // 注意 0f 是**恒定目标**：真正的「返回」走 onBackCompleted，
-    // 那条路径会直接弹路由栈、覆盖层随之被移除，不需要这里动画。
+    // 收尾动画：手势取消后把进度平滑送回 0。
     val settle = remember { Animatable(0f) }
-    LaunchedEffect(state.isInProgress) {
-        if (!state.isInProgress && state.progress > 0f) {
-            settle.snapTo(state.progress)
-            // 动画期间持续把插值写回 state.progress，让读取方（UI）看到中间帧。
-            settle.animateTo(
-                targetValue = 0f,
-                animationSpec = tween(200, easing = FastOutSlowInEasing),
-            ) {
-                state.progress = value
+    LaunchedEffect(Unit) {
+        snapshotFlow { state.isInProgress }.collect { inProgress ->
+            if (!inProgress && state.progress > 0f) {
+                settle.snapTo(state.progress)
+                settle.animateTo(
+                    targetValue = 0f,
+                    animationSpec = tween(
+                        durationMillis = state.tuning.settleDurationMs,
+                        easing = FastOutSlowInEasing,
+                    ),
+                ) {
+                    state.progress = value
+                }
             }
         }
     }
 
-    NavigationBackHandler(
-        state = navState,
-        isBackEnabled = isBackEnabled,
-        onBackCompleted = {
-            // 真正返回：进度归零，交给上层走路由弹栈。
-            // 覆盖层会因为路由变化直接被移除，不需要收尾动画。
+    PredictiveBackHandler(enabled = isBackEnabled) { progressFlow ->
+        // 每次手势开始重读参数，保证「设置里改完立刻生效」
+        state.tuning = BackAnimationTuning.from(context)
+        try {
+            progressFlow.collect { backEvent ->
+                state.progress = backEvent.progress.coerceIn(0f, 1f)
+                state.touch = Offset(backEvent.touchX, backEvent.touchY)
+                state.isInProgress = true
+            }
+            // Flow 正常结束 = 手势越过阈值，确认返回。
             state.progress = 0f
             state.isInProgress = false
             onBack()
-        },
-        onBackCancelled = {
-            // 取消：不动路由栈。翻标志位即触发上面的收尾动画。
+        } catch (e: CancellationException) {
+            // 手势取消：不动路由栈，翻标志位触发回弹动画。
             state.isInProgress = false
-        },
-    )
+            throw e
+        }
+    }
 
     return state
 }

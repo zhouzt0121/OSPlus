@@ -1,6 +1,6 @@
 # OSPlus · Android 性能监视与调优工具
 
-包名 `com.osplus.tools` ｜ 版本 **2.8.0**（versionCode 25）｜ minSdk 33 (Android 13) ｜ targetSdk 36 ｜ compileSdk 37
+包名 `com.osplus.tools` ｜ 版本 **2.8.1**（versionCode 26）｜ minSdk 33 (Android 13) ｜ targetSdk 36 ｜ compileSdk 37
 
 完全自研的**本地**性能监视与调优工具。数据全部来自 `/proc`、`/sys` 与系统 API，
 **不做任何云端上报**；涉及内核写入的功能全部经 Root 执行。
@@ -14,11 +14,13 @@
 **统一顶栏**（左侧标题 + 右侧页面动作）+ 底部悬浮导航分
 **概览 / 性能 / 帧率 / 电源** 四个一级页；**设置**挂在顶栏右侧。
 概览与性能页的卡片可下钻到 **内存 / GPU / CPU / 进程 / 性能调度** 五个二级页，
-设置页另有 **系统开关 / 提权管理** 两个三级页。
+设置页另有 **系统开关 / 提权管理 / 预测性返回** 三个三级页。
 
 二级页是盖在一级页之上的**全屏浮层**，支持 **Android 预测性返回**：
 从屏幕边缘右滑时，浮层跟手右移、缩角并轻微缩小，下面的一级页实时露出；
 手势拖回原位即取消，越过阈值才真正返回。
+跟手幅度（位移 / 缩放 / 圆角 / 回弹耗时 / 压暗）在
+**设置 → 预测性返回** 里可实时调整，无需重启。
 
 | 一级页 | 一句话 |
 |---|---|
@@ -372,36 +374,81 @@ val viewing = viewingSamples.isNotEmpty()
 
 ---
 
-### 17. 预测性返回：进度不在回调参数里
+### 17. 预测性返回：**用 `PredictiveBackHandler`，别用 `NavigationBackHandler`**
 
 **背景**：Android 13 引入「预测性返回桌面」，Android 14 扩展到应用内。开启后，
 从屏幕边缘右滑的过程中系统要**提前展示**将要返回的上一页；手势未完成时用户
 能看到那一页正从左侧回来，也可以把手指拖回去取消。前提是 Manifest 里
 `android:enableOnBackInvokedCallback="true"`——本工程从 2.5.0 起就已置位。
 
-**第一个坑：`NavigationBackHandler` 不给进度。**
+#### 17.1 致命弯路：`NavigationBackHandler` 会**抑制系统动画**
+
+2.8.0 初版用的是 `androidx.navigationevent.compose.NavigationBackHandler`，
+理由是它「也能拿到进度」（`state.transitionState.latestEvent.progress`）。
+**这条路是错的，而且症状极具迷惑性**：代码逻辑全对、日志里 `progress` 从
+0.33 平滑递增到 0.45、`onBackCompleted` 也正常触发，**但屏幕上纹丝不动**。
+
+两个叠加的原因：
+
+1. **它会顶掉系统动画。** 官方文档明确写明：应用一旦注册了
+   `PRIORITY_DEFAULT` / `PRIORITY_OVERLAY` 的返回回调，
+   **系统自己的预测性返回动画就不会再播**，必须由应用自己画完全过程。
+   `NavigationBackHandler` 注册的正是默认优先级。
+2. **它不是动画 API，进度不好接。** 用它驱动 `graphicsLayer` 时极易踩
+   「状态读取没触发 layer 失效」的坑（见 17.2），结果就是既没有系统动画、
+   也没有自绘动画，只剩松手瞬间的跳变。
+
+官方给 Compose **动画**场景准备的 API 是
+`androidx.activity.compose.PredictiveBackHandler`
+（依赖 `androidx.activity:activity-compose:1.8.0+`，本工程 1.13.0）：
 
 ```kotlin
-// 只有两个终态回调，手势滑动过程中的 progress 完全拿不到
-NavigationBackHandler(state, isBackEnabled, onBackCompleted, onBackCancelled)
+PredictiveBackHandler(enabled = isBackEnabled) { progressFlow ->
+    try {
+        progressFlow.collect { backEvent ->
+            state.progress = backEvent.progress      // 跟手进度 0f~1f
+            state.touch = Offset(backEvent.touchX, backEvent.touchY)
+        }
+        onBack()                                     // Flow 正常结束 = 确认返回
+    } catch (e: CancellationException) {
+        state.isInProgress = false                   // 手势取消 → 回弹
+        throw e
+    }
+}
 ```
 
-拿不到进度，动画就只能等松手才播，退化成「瞬间切换」，与 Android 13 之前没有区别。
-进度实际藏在 `state.transitionState` 里：
+`BackEventCompat` 提供的字段：
 
 | 字段 | 含义 |
 |---|---|
-| `NavigationEventTransitionState.InProgress.latestEvent.progress` | 0f ~ 1f，手势越过阈值的比例 |
-| `.latestEvent.touchX / touchY` | 手指屏幕坐标，可驱动「返回箭头跟手」 |
-| `.latestEvent.swipeEdge` | `EDGE_LEFT` / `EDGE_RIGHT` / `EDGE_NONE` |
+| `progress` | 0f ~ 1f，手势越过阈值的比例 |
+| `touchX` / `touchY` | 手指屏幕坐标，可驱动「返回箭头跟手」 |
+| `swipeEdge` | `EDGE_LEFT` / `EDGE_RIGHT` / `EDGE_NONE` |
 
-所以 `PredictiveBack.kt` 用 `snapshotFlow { navState.transitionState }` 订阅，
-把它抽成对外可用的 `animatedProgress`。**手势中直接吃真实值**（零延迟跟手），
-**手势结束后改由 `Animatable` 平滑收尾**——两者必须分开，否则收尾动画会把
-实时值往回拽，表现为跟手迟滞。`onBackCompleted` 里不能调 `Animatable.stop()`：
-它是 `suspend` 函数，而回调不是协程上下文。
+#### 17.2 致命弯路二：`progress` 读在组合体里 = 屏幕不刷新
 
-**第二个坑：两级页面共用一个 `AnimatedContent` 插槽，让开之后会露底。**
+```kotlin
+// ❌ 错误：只在组合那一刻取值一次，手势期间永不变化
+val backProgress = backState.progress
+Box(Modifier.graphicsLayer { translationX = backProgress * w })
+
+// ✅ 正确：在 lambda 内部读，lambda 每次重绘都执行，读到的永远是最新值
+Box(Modifier.graphicsLayer {
+    val p = backState.progress
+    translationX = p * w
+})
+```
+
+`graphicsLayer` 的 lambda 在**绘制阶段**执行，在里面读 snapshot 状态会让 layer
+正确失效并重绘；写在**组合函数体**里则只是个静态快照。这一条是「日志有进度、
+屏幕没反应」的根因，排查时优先查它。
+
+> 注：`snapshotFlow` 收尾动画用 `Animatable` 把进度平滑推回 0；
+> 手势中则直接吃 `backEvent.progress`（零延迟跟手）。
+> 两条写入路径必须**互斥**，否则收尾动画会把实时值往回拽，表现为跟手迟滞。
+> 另外 `Animatable.stop()` 是 `suspend` 函数，不能在非协程回调里调。
+
+#### 17.3 两级页面必须分层，否则让开时露底
 
 改造前 `screenKey = route ?: tabKey(rootTab)`，一级页与二级页是**同一个插槽的两个状态**。
 覆盖层让开时底下一片空白（`PageBackground` 也被一起移走了），接预测性返回必然穿帮。
@@ -424,23 +471,62 @@ Box
 浮层的跟手变换全在 `graphicsLayer` 里，不触发重组，也不影响子内容布局：
 
 ```kotlin
-translationX = backProgress * screenWidthPx * 0.32f   // 屏幕宽 32%
-scaleX = scaleY = 1f - backProgress * 0.06f           // 轻微缩小，给底层露出感
-shape = RoundedCornerShape(28.dp * backProgress)      // 圆角随进度长出来
-clip = backProgress > 0.001f                          // 静止态不裁，四角保持完整
-alpha = 1f - backProgress * 0.12f                     // 轻微压暗，强化被推走的层次
+translationX = p * screenWidthPx * 0.32f             // 屏幕宽 32%
+scaleX = scaleY = 1f - p * 0.06f                      // 轻微缩小，给底层露出感
+shape = RoundedCornerShape(28.dp * p)                 // 圆角随进度长出来
+clip = p > 0.001f                                     // 静止态不裁，四角保持完整
+alpha = 1f - p * 0.12f                                // 轻微压暗，强化被推走的层次
 ```
 
 位移基准用 `LocalConfiguration.screenWidthDp` 换算，**不要读 Layout 尺寸**——
 后者首帧拿不到，第一次手势位移会是 0。
 
-**第三个坑：`isBackEnabled = false` 不是「禁用返回」。** 它表示「本处理器不接管」，
-系统会把这次手势回落给默认行为——在一级页边缘右滑时，正是靠它拿到
-**预测性返回桌面**。所以判据写 `route != null || rootTab != RootTab.Overview`，
-而不是无条件 true。
+#### 17.4 `isBackEnabled = false` 不是「禁用返回」
+
+它表示「本处理器不接管」，系统会把这次手势回落给默认行为——在一级页边缘右滑时，
+正是靠它拿到**预测性返回桌面**。所以判据写
+`route != null || rootTab != RootTab.Overview`，而不是无条件 true。
 
 **顶栏返回按钮与手势共用同一条路径**：两者都调用同一个 `popRoute()`，
 不会出现「按钮返回有动画、手势返回没有」这类不一致。
+
+#### 17.5 国产 ROM 有一道私有总闸（重要）
+
+一加 / ColorOS 上实测「代码全对但没有任何预测性返回」时，**先查这个**：
+
+```bash
+adb shell settings get secure oplus_third_part_apps_predictive_back   # 出厂默认 0
+adb shell settings put secure oplus_third_part_apps_predictive_back 1 # 开启后重启应用
+```
+
+它**不是 Manifest 能控制的**，是 ROM 层的用户设置。关着时系统**完全不给第三方应用
+下发手势事件**，`PredictiveBackHandler` 一个事件都收不到。同一个坑也存在于
+HyperOS / OriginOS 等国产 ROM（开关名不同），换机型时先 `settings list secure`
+搜一遍相关关键字，不要先怀疑自己的代码。
+
+#### 17.6 动画幅度做成可调项，而不是硬编码常量
+
+跟手动画的五个幅度**没有客观最优解**——屏幕尺寸、刷新率、个人对「跟手」的容忍度
+都会影响观感，拍一个常量只能服务一部分人。因此全部开放到
+**设置 → 预测性返回**，可在应用内实时调整：
+
+| 参数 | 默认 | 范围 | 调大的效果 |
+| --- | --- | --- | --- |
+| 位移比例 | 0.32 | 0~1 | 底层露出更多、更「跟手」 |
+| 缩小量 | 0.06 | 0~0.3 | 后退层次更强，超过 0.15 显得夸张 |
+| 圆角上限 | 28 dp | 0~64 | 覆盖层四角更圆 |
+| 回弹耗时 | 200 ms | 60~800 | 取消后回弹更柔和但偏慢 |
+| 压暗量 | 0.12 | 0~0.5 | 被推走的层次感更强 |
+
+两类实现细节值得记：
+
+1. **参数不是常量，所以不能写进 `graphicsLayer` 的闭包捕获**。`graphicsLayer` 的
+   lambda 会在每帧重绘时执行，若在里面读一个组合期固定的 `data class` 实例，
+   改设置后要等重组才生效。这里在**手势开始时**重读一次偏好并写入 `state.tuning`，
+   既保证「改完设置 → 返回 → 滑一次」就是新值，又不会在滑动中途被改设置打断。
+2. **输入框用字符串状态托管**，不直接绑 `Float`。直接绑会让「输入 `0.`」这类
+   中间态被解析失败吞掉，用户打到一半字就跳变。保存时再 `toFloatOrNull()`，
+   解析失败保持原值不动。
 
 ---
 
@@ -483,9 +569,10 @@ app/src/main/java/com/osplus/tools/
 │   │                            #   LiquidBottomTab / LiquidToggle / LiquidSlider / LiquidUtils
 │   ├── components/              # Surfaces / LiquidGlass（底栏·开关·滑块的适配层）/
 │   │                            #   GlassShaders / Charts / Navigation / PrivilegeComponents /
-│   │                            #   PredictiveBack / Common
+│   │                            #   PredictiveBack（官方 PredictiveBackHandler 封装 + 参数注入）/ Common
 │   └── screen/                  # Overview / Perf / Fps / Power / Settings /
-│                                #   SystemToggles / Privilege / LiquidLab / 详情页 / 性能调度
+│                                #   SystemToggles / Privilege / PredictiveBack（动画参数）/
+│                                #   LiquidLab / 详情页 / 性能调度
 ├── service/FpsOverlayService.kt # 跨应用监视前台服务：通知 / 悬浮窗 / 保活锚点
 └── receiver/BootReceiver.kt
 
@@ -495,7 +582,7 @@ app/src/test/java/com/osplus/tools/
 └── GpuDataSourceTest.kt         # GPU 频率单位判定
 ```
 
-**61 个 Kotlin 文件 / 18727 行**（main 58 + test 3）。
+**62 个 Kotlin 文件 / 19128 行**（main 59 + test 3）。
 
 ---
 
@@ -586,6 +673,11 @@ adb exec-out "run-as com.osplus.tools cat databases/osplus_fps_watch" > fps.db
     API 33 只提供「预测性返回桌面」与返回完成的终态回调，滑动过程中的进度
     不下发，因此覆盖层不会有跟手位移（返回本身仍然正常）。本机
     （PJZ110 / Android 17）为完整支持。
+12. **部分国产 ROM 默认关闭「第三方应用预测性返回」**。一加 / ColorOS 上是
+    `secure oplus_third_part_apps_predictive_back`（出厂 0），关着时系统**完全不给
+    第三方应用下发手势事件**，应用侧无任何代码可以绕过。需要用户在系统设置里开启，
+    或 `settings put secure oplus_third_part_apps_predictive_back 1` 后重启应用。
+    详见 §17.5。这是系统级开关，不属于应用缺陷。
 
 ---
 

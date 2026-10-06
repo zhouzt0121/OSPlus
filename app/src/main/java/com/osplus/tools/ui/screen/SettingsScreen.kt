@@ -81,6 +81,7 @@ fun SettingsScreen(
     onOpenLiquidLab: () -> Unit = {},
     onOpenSystemToggles: () -> Unit = {},
     onOpenPrivilege: () -> Unit = {},
+    onOpenPredictiveBack: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val c = osColors()
@@ -347,6 +348,11 @@ fun SettingsScreen(
                         title = "系统开关",
                         summary = "动画缩放、状态栏图标、开发者选项等",
                         onClick = onOpenSystemToggles,
+                    )
+                    SettingEntryRow(
+                        title = "预测性返回",
+                        summary = "跟手位移、缩放、圆角、回弹耗时等动画参数",
+                        onClick = onOpenPredictiveBack,
                     )
                 }
             }
