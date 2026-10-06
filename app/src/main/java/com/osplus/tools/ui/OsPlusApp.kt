@@ -8,6 +8,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.BatteryFull
@@ -23,21 +24,24 @@ import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigationevent.NavigationEventInfo
-import androidx.navigationevent.compose.NavigationBackHandler
-import androidx.navigationevent.compose.rememberNavigationEventState
 import com.osplus.tools.ui.components.LiquidBarItem
 import com.osplus.tools.ui.components.LiquidBottomBar
 import com.osplus.tools.ui.components.OsTopBar
 import com.osplus.tools.ui.components.OsTopBarAction
 import com.osplus.tools.ui.components.OsTopBarPillAction
 import com.osplus.tools.ui.components.PageBackground
+import com.osplus.tools.ui.components.rememberPredictiveBackState
 import com.osplus.tools.ui.screen.CpuDetailScreen
 import com.osplus.tools.ui.screen.FpsScreen
 import com.osplus.tools.ui.screen.LiquidLabScreen
@@ -57,6 +61,7 @@ import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import com.kyant.backdrop.backdrops.emptyBackdrop
 
 /**
  * 底部悬浮导航的一级页面。
@@ -124,16 +129,22 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
         val powerHasRecord by viewModel.powerHasRecord.collectAsStateWithLifecycle()
         val c = osColors()
 
-        // 预测性返回：优先退二级路由 → 其次回概览 → 已在概览则交还系统执行退出动画
-        val backState = rememberNavigationEventState(NavigationEventInfo.None)
-        NavigationBackHandler(
-            state = backState,
+        // 预测性返回：优先退二级路由 → 其次回概览 → 已在概览则交还系统执行退出动画。
+        //
+        // 这里用 rememberPredictiveBackState 而不是裸的 NavigationBackHandler，
+        // 因为需要**手势进度**来驱动覆盖层的跟手位移（见下方 backProgress）。
+        val backState = rememberPredictiveBackState(
             isBackEnabled = route != null || rootTab != RootTab.Overview,
-            onBackCompleted = {
-                if (routeStack.isNotEmpty()) popRoute() else rootTab = RootTab.Overview
-            },
-        )
+        ) {
+            if (routeStack.isNotEmpty()) popRoute() else rootTab = RootTab.Overview
+        }
+        // 0f = 完全展开（覆盖层铺满），1f = 已退回（覆盖层让开）。
+        // 手势进行中由系统给的实时进度驱动，松手后由内部动画器平滑收尾。
+        val backProgress = backState.progress
 
+        // 二级/三级页的 AnimatedContent key。
+        // 取栈顶路由即可：栈内切换（设置 → 系统开关）也走这个 key，
+        // 与一级页的 rootTab key 是两套独立的动画槽。
         val screenKey = route ?: tabKey(rootTab)
 
         // 顶栏标题：二级页取枚举里的文案（与页面同一份定义，不会漂移），一级页取页签名
@@ -150,6 +161,13 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
 
         // 内容层先渲染进 GraphicsLayer 并记录下来，悬浮控件据此做真实背景模糊（液态玻璃）。
         // 记录的是「背景 + 顶栏 + 页面内容」整层，不含底部悬浮条自身——否则它会把自己的高光也糊进去。
+        //
+        // **一个 LayerBackdrop 实例只能被一处 layerBackdrop 绑定。**
+        // 库的 LayerBackdropNode 在 onDetach 时会把共享的 layerCoordinates 置 null，
+        // 而 LayerBackdrop.drawBackdrop 对坐标**不做空校验**（直接 positionInWindow），
+        // 两个节点绑同一实例时，任一节点卸载就会让另一个在绘制期间 NPE。
+        // 2.8.0 初次实现曾在底层与浮层各绑一次 backdrop，route 非空（rememberSaveable
+        // 恢复上次页面）时启动即闪退，就是踩了这条。因此下面按层各建独立实例。
         val backdrop = rememberLayerBackdrop()
         // 背景层单独记一次，只给顶栏按钮采样。
         //
@@ -160,7 +178,22 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
         // 这里更简单：把纯背景单独录一层，顶栏按钮只采它。
         val topBarBackdrop = rememberLayerBackdrop()
 
+        // 路由浮层**不建 backdrop**。
+        //
+        // 浮层内的玻璃控件（页面里的按钮 / 开关）一律传 emptyBackdrop() 兜底，
+        // 这是项目既有约定（README §16），因此没有任何消费者需要录制。
+        // 更重要的是**不能录**：浮层根节点带 graphicsLayer 变换，
+        // 把 layerBackdrop 挂在变换子树里会让 RenderNode 树自我引用、
+        // prepareTree 无限递归直至 RenderThread 栈溢出（已实测，见下方注释）。
+
         Box(modifier = Modifier.fillMaxSize()) {
+            // ── 底层：一级页（概览 / 性能 / 帧率 / 电源）────────────────────
+            //
+            // 它**始终**铺在最底下，二级页是盖在它上面的浮层。
+            // 这是预测性返回能成立的结构前提：手势往右拖时，覆盖层让开，
+            // 底下这一页必须已经在渲染着，用户才看得到「上一页正回来」。
+            // 若两级页面共用一个 AnimatedContent 插槽（改造前的写法），
+            // 让开之后下面什么都没有，动画会露黑底。
             Box(
                 Modifier
                     .fillMaxSize()
@@ -173,125 +206,47 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                 ) {
                     PageBackground()
                 }
-                // 顶栏自带状态栏内边距，因此这里用 Column 而非 Box：
-                // 顶栏占据固定高度，内容区吃掉剩余空间，页面内容永远不会钻到顶栏下面，
-                // 也就不需要在每个页面里各写一遍顶部留白。
+
                 Column(Modifier.fillMaxSize()) {
-                    OsTopBar(
-                        title = topTitle,
-                        onBack = if (route != null) ({ popRoute() }) else null,
-                        backdrop = topBarBackdrop,
-                        actions = {
-                            if (rootTab == RootTab.Overview && route == null) {
-                                OsTopBarPillAction(
-                                    icon = Icons.Rounded.CleaningServices,
-                                    label = "清内存",
-                                    contentDescription = "清理物理内存",
-                                    enabled = rootAvailable,
-                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
-                                    onClick = { if (rootAvailable) viewModel.cleanMemCaches() },
-                                    backdrop = topBarBackdrop,
-                                )
-                                OsTopBarPillAction(
-                                    icon = Icons.Rounded.SwapHoriz,
-                                    label = "清交换",
-                                    contentDescription = "清理交换分区",
-                                    enabled = rootAvailable,
-                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
-                                    onClick = { if (rootAvailable) viewModel.cleanSwap() },
-                                    backdrop = topBarBackdrop,
-                                )
-                                OsTopBarAction(
-                                    icon = Icons.Rounded.FiberManualRecord,
-                                    contentDescription = if (fpsRecording) "停止记录帧率" else "记录帧率",
-                                    tint = if (fpsRecording) c.red else null,
-                                    onClick = {
-                                        if (fpsRecording) {
-                                            viewModel.stopFpsRecording()
-                                        } else {
-                                            // 开录后直接切到帧率页：那一页有实时条数与时长，
-                                            // 用户能立刻确认「确实在记了」，而不是只有按钮变了个色
-                                            viewModel.startFpsRecording()
-                                            rootTab = RootTab.Fps
-                                        }
-                                    },
-                                    backdrop = topBarBackdrop,
-                                )
-                                OsTopBarAction(
-                                    icon = Icons.Rounded.Settings,
-                                    contentDescription = "设置",
-                                    onClick = { pushRoute(RouteSettings) },
-                                    backdrop = topBarBackdrop,
-                                )
-                            }
-                            // 电源页的「耗电统计」页签上，把复制 / 删除放在顶栏右侧：
-                            // 这两个动作针对「本次记录」这个全局对象，属于页面级操作，
-                            // 而页面内的操作条会随列表滚动跑出屏幕
-                            if (rootTab == RootTab.Power && route == null && powerTab == 0) {
-                                OsTopBarAction(
-                                    icon = Icons.Rounded.ContentCopy,
-                                    contentDescription = "复制本次耗电记录",
-                                    enabled = powerHasRecord,
-                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
-                                    onClick = { if (powerHasRecord) viewModel.copyPowerRecord() },
-                                    backdrop = topBarBackdrop,
-                                )
-                                OsTopBarAction(
-                                    icon = Icons.Rounded.DeleteOutline,
-                                    contentDescription = "删除本次耗电记录",
-                                    enabled = powerHasRecord,
-                                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
-                                    onClick = { if (powerHasRecord) viewModel.clearPowerRecord() },
-                                    backdrop = topBarBackdrop,
-                                )
-                            }
+                    RootTopBar(
+                        rootTab = rootTab,
+                        onOpenSettings = { pushRoute(RouteSettings) },
+                        onStartFps = {
+                            viewModel.startFpsRecording()
+                            rootTab = RootTab.Fps
                         },
+                        backdrop = topBarBackdrop,
+                        rootAvailable = rootAvailable,
+                        fpsRecording = fpsRecording,
+                        powerTab = powerTab,
+                        powerHasRecord = powerHasRecord,
+                        onCleanMem = { viewModel.cleanMemCaches() },
+                        onCleanSwap = { viewModel.cleanSwap() },
+                        onStopFps = { viewModel.stopFpsRecording() },
+                        onCopyPowerRecord = { viewModel.copyPowerRecord() },
+                        onClearPowerRecord = { viewModel.clearPowerRecord() },
                     )
 
                     Box(Modifier.weight(1f)) {
                         AnimatedContent(
-                            targetState = screenKey,
+                            targetState = rootTab,
                             transitionSpec = {
                                 fadeIn(tween(200)) togetherWith fadeOut(tween(140))
                             },
-                            label = "screen",
-                        ) { key ->
-                            // 内容完全由动画的 key 决定，避免过渡期间新旧页面串帧
-                            val keyDetail = OverviewDetail.entries.firstOrNull { it.name == key }
-                            val keyTab = RootTab.entries.firstOrNull { tabKey(it) == key }
+                            label = "rootTab",
+                        ) { tab ->
                             Box(Modifier.fillMaxSize()) {
-                                when {
-                                    key == RouteSettings -> SettingsScreen(
-                                        viewModel,
-                                        onOpenLiquidLab = { pushRoute(RouteLiquidLab) },
-                                        onOpenSystemToggles = { pushRoute(RouteSystemToggles) },
-                                        onOpenPrivilege = { pushRoute(RoutePrivilege) },
-                                    )
-
-                                    key == RouteLiquidLab -> LiquidLabScreen()
-
-                                    key == RouteSystemToggles -> SystemTogglesScreen(viewModel)
-
-                                    key == RoutePrivilege -> PrivilegeScreen(viewModel)
-
-                                    keyDetail != null -> when (keyDetail) {
-                                        OverviewDetail.Memory -> MemDetailScreen(viewModel)
-                                        OverviewDetail.Gpu -> GpuDetailScreen(viewModel)
-                                        OverviewDetail.Cpu -> CpuDetailScreen(viewModel)
-                                        OverviewDetail.Process -> ProcessDetailScreen(viewModel)
-                                        OverviewDetail.Sched -> PerfSchedScreen(viewModel)
-                                    }
-
-                                    keyTab == RootTab.Overview -> OverviewScreen(
+                                when (tab) {
+                                    RootTab.Overview -> OverviewScreen(
                                         vm = viewModel,
                                         onOpen = { pushRoute(it.name) },
                                         onOpenPower = { rootTab = RootTab.Power },
                                         onOpenFps = { rootTab = RootTab.Fps },
                                     )
 
-                                    keyTab == RootTab.Perf -> PerfScreen(viewModel) { pushRoute(it.name) }
-                                    keyTab == RootTab.Fps -> FpsScreen(viewModel)
-                                    else -> PowerScreen(viewModel)
+                                    RootTab.Perf -> PerfScreen(viewModel) { pushRoute(it.name) }
+                                    RootTab.Fps -> FpsScreen(viewModel)
+                                    RootTab.Power -> PowerScreen(viewModel)
                                 }
                             }
                         }
@@ -299,6 +254,16 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                 }
             }
 
+            // 底栏与上面的录制层是**兄弟节点**，不是子节点。
+            //
+            // 这一点是硬约束：底栏自己采样 `backdrop` 做折射，
+            // 如果它同时位于 `layerBackdrop(backdrop)` 的录制子树内，
+            // 录制层就包含了一个采样自己的组件 —— RenderNode 树自我引用，
+            // prepareTree 遍历时无限递归，RenderThread 栈溢出直接 SIGSEGV
+            // （实测 tombstone: LinearAllocator::allocImpl ← RenderNode::prepareTreeImpl ×500）。
+            // 改造前底栏本来就在录制层外面，是 2.8.0 把它挪进 Box 时踩到的。
+            //
+            // 位置靠 align 保持底部居中，视觉与之前完全一致。
             LiquidBottomBar(
                 items = listOf(
                     // 用 Filled 而不是 Rounded：底栏图标只有 22dp，
@@ -317,8 +282,207 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                     routeStack = emptyList()
                 },
                 backdrop = backdrop,
-                modifier = Modifier.align(Alignment.BottomCenter),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .graphicsLayer { alpha = 1f - backProgress },
             )
+
+            // ── 上层：二级/三级路由浮层 ───────────────────────────────────
+            //
+            // 只在存在路由时存在。整层跟手右移 + 圆角化 + 轻微缩小，
+            // 缩小量给底层一点点「露出感」，是 Android 14 原生返回预览的观感。
+            //
+            // 位移量是屏幕宽度的 32%：走满 32% 时覆盖层基本让开、
+            // 底层页面主体完全可见，同时手指不需要拖到屏幕另一头。
+            if (route != null) {
+                // 位移基准取屏幕宽度。用 LocalConfiguration 的 dp 值换算，
+                // 而不是读 Layout 尺寸——后者在首帧拿不到，会导致第一次手势位移为 0。
+                val density = LocalDensity.current
+                val screenWidthPx = with(density) {
+                    LocalConfiguration.current.screenWidthDp.dp.toPx()
+                }
+                val maxCorner = remember { 28.dp }
+
+                // **录制节点必须留在变换子树之外。**
+                //
+                // 这里踩过一次 RenderThread 栈溢出（SIGSEGV in LinearAllocator::allocImpl ←
+                // RenderNode::prepareTreeImpl 无限递归 500+ 帧，见 tombstone_23）：
+                // 最初的写法是 `Box(graphicsLayer{...}) { Box(layerBackdrop(sheet)) {...} }`，
+                // 把一个持有 GraphicsLayer 的录制节点套进了带 `graphicsLayer` 变换的父节点里，
+                // RenderNode 树因此自我引用，prepareTree 遍历时无限递归直至栈溢出。
+                //
+                // 正确结构：**外层只负责变换、内层只负责录制**，两者是兄弟语义而非嵌套，
+                // 且录制层的坐标不参与父层变换的反算。
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            translationX = backProgress * screenWidthPx * 0.32f
+                            val scale = 1f - backProgress * 0.06f
+                            scaleX = scale
+                            scaleY = scale
+                            // 圆角随进度长出来。静止态（progress=0）圆角为 0，
+                            // 页面四角不会被切；只有手势真的开始推才逐渐变圆。
+                            shape = RoundedCornerShape(maxCorner * backProgress)
+                            clip = backProgress > 0.001f
+                            // 让开时轻微压暗，强化「它在被推走」的层次
+                            alpha = 1f - backProgress * 0.12f
+                        },
+                ) {
+                    // 内容层：**不再挂 layerBackdrop**。
+                    // 浮层内的玻璃控件一律传 emptyBackdrop() 兜底（项目既有约定），
+                    // 因此这里没有任何消费者需要录制。
+                    Box(Modifier.fillMaxSize()) {
+                        PageBackground()
+                        Column(Modifier.fillMaxSize()) {
+                            OsTopBar(
+                                title = topTitle,
+                                onBack = { popRoute() },
+                                backdrop = emptyBackdrop(),
+                            )
+                            Box(Modifier.weight(1f)) {
+                                AnimatedContent(
+                                    targetState = screenKey,
+                                    transitionSpec = {
+                                        fadeIn(tween(200)) togetherWith fadeOut(tween(140))
+                                    },
+                                    label = "routeScreen",
+                                ) { key ->
+                                    val keyDetail = OverviewDetail.entries
+                                        .firstOrNull { it.name == key }
+                                    Box(Modifier.fillMaxSize()) {
+                                        when {
+                                            key == RouteSettings -> SettingsScreen(
+                                                viewModel,
+                                                onOpenLiquidLab = { pushRoute(RouteLiquidLab) },
+                                                onOpenSystemToggles = {
+                                                    pushRoute(RouteSystemToggles)
+                                                },
+                                                onOpenPrivilege = { pushRoute(RoutePrivilege) },
+                                            )
+
+                                            key == RouteLiquidLab -> LiquidLabScreen()
+
+                                            key == RouteSystemToggles ->
+                                                SystemTogglesScreen(viewModel)
+
+                                            key == RoutePrivilege -> PrivilegeScreen(viewModel)
+
+                                            keyDetail != null -> when (keyDetail) {
+                                                OverviewDetail.Memory -> MemDetailScreen(viewModel)
+                                                OverviewDetail.Gpu -> GpuDetailScreen(viewModel)
+                                                OverviewDetail.Cpu -> CpuDetailScreen(viewModel)
+                                                OverviewDetail.Process ->
+                                                    ProcessDetailScreen(viewModel)
+
+                                                OverviewDetail.Sched -> PerfSchedScreen(viewModel)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
+
+/**
+ * 一级页顶栏。
+ *
+ * 从 [OsPlusApp] 主体里抽出来，有两个原因：
+ *
+ * 1. 主体现在要同时处理「底层一级页」与「上层路由浮层」两套布局，
+ *    顶栏动作那一大段（四个概览动作 + 两个电源动作）再内联会把结构彻底埋掉；
+ * 2. 一级页顶栏与二级页顶栏的**动作区完全不同**——一级页有清理/录制/设置，
+ *    二级页只有一个返回箭头。分开写比在一个 `OsTopBar` 里塞条件分支清楚。
+ *
+ * 注意这里**不接收 route**：一级页顶栏只在底层出现，
+ * 路由是否打开由 [OsPlusApp] 决定用哪一层顶栏。
+ */
+@Composable
+private fun RootTopBar(
+    rootTab: RootTab,
+    onOpenSettings: () -> Unit,
+    onStartFps: () -> Unit,
+    onStopFps: () -> Unit,
+    onCleanMem: () -> Unit,
+    onCleanSwap: () -> Unit,
+    onCopyPowerRecord: () -> Unit,
+    onClearPowerRecord: () -> Unit,
+    backdrop: com.kyant.backdrop.Backdrop,
+    rootAvailable: Boolean,
+    fpsRecording: Boolean,
+    powerTab: Int,
+    powerHasRecord: Boolean,
+) {
+    val c = osColors()
+    OsTopBar(
+        title = when (rootTab) {
+            RootTab.Overview -> "概览"
+            RootTab.Perf -> "性能"
+            RootTab.Fps -> "帧率"
+            RootTab.Power -> "电源"
+        },
+        backdrop = backdrop,
+        actions = {
+            if (rootTab == RootTab.Overview) {
+                OsTopBarPillAction(
+                    icon = Icons.Rounded.CleaningServices,
+                    label = "清内存",
+                    contentDescription = "清理物理内存",
+                    enabled = rootAvailable,
+                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                    onClick = { if (rootAvailable) onCleanMem() },
+                    backdrop = backdrop,
+                )
+                OsTopBarPillAction(
+                    icon = Icons.Rounded.SwapHoriz,
+                    label = "清交换",
+                    contentDescription = "清理交换分区",
+                    enabled = rootAvailable,
+                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                    onClick = { if (rootAvailable) onCleanSwap() },
+                    backdrop = backdrop,
+                )
+                OsTopBarAction(
+                    icon = Icons.Rounded.FiberManualRecord,
+                    contentDescription = if (fpsRecording) "停止记录帧率" else "记录帧率",
+                    tint = if (fpsRecording) c.red else null,
+                    onClick = { if (fpsRecording) onStopFps() else onStartFps() },
+                    backdrop = backdrop,
+                )
+                OsTopBarAction(
+                    icon = Icons.Rounded.Settings,
+                    contentDescription = "设置",
+                    onClick = onOpenSettings,
+                    backdrop = backdrop,
+                )
+            }
+            // 电源页的「耗电统计」页签上，把复制 / 删除放在顶栏右侧：
+            // 这两个动作针对「本次记录」这个全局对象，属于页面级操作，
+            // 而页面内的操作条会随列表滚动跑出屏幕
+            if (rootTab == RootTab.Power && powerTab == 0) {
+                OsTopBarAction(
+                    icon = Icons.Rounded.ContentCopy,
+                    contentDescription = "复制本次耗电记录",
+                    enabled = powerHasRecord,
+                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                    onClick = { if (powerHasRecord) onCopyPowerRecord() },
+                    backdrop = backdrop,
+                )
+                OsTopBarAction(
+                    icon = Icons.Rounded.DeleteOutline,
+                    contentDescription = "删除本次耗电记录",
+                    enabled = powerHasRecord,
+                    // 原版 isInteractive=false 不拦截点击，守卫写在 onClick 里
+                    onClick = { if (powerHasRecord) onClearPowerRecord() },
+                    backdrop = backdrop,
+                )
+            }
+        },
+    )
+}
+

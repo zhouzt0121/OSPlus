@@ -57,8 +57,18 @@ android {
         //           会话（viewingSamples 有数据但 records 为空）整个图表区被判成
         //           空状态、曲线不渲染——改为统一下游数据集 `src`（历史优先）
         //        仓库瘦身：移除 dist/（167 个第三方 Magisk 模块文件）、历史 APK 与调试截图
-        versionCode = 24
-        versionName = "2.7.0"
+        // 2.8.0：预测性返回（Predictive Back）接入——
+        //        ① 层级重构：一级页提升为**常驻底层**，二级/三级页改为盖在其上的
+        //           全屏浮层。改造前两级页面共用同一个 AnimatedContent 插槽，
+        //           手势让开之后底下没有任何内容，接预测性返回会直接露底；
+        //        ② 新增 PredictiveBack.kt：从 NavigationEventTransitionState.InProgress
+        //           取出手势进度（NavigationBackHandler 本身只给完成/取消两个终态），
+        //           手势中吃实时值保证零延迟跟手，结束后由 Animatable 平滑收尾；
+        //        ③ 浮层跟手右移（屏幕宽 32%）+ 圆角渐显 + 缩放 0.94 + 轻微压暗，
+        //           底栏随浮层让开同步淡入；
+        //        ④ 移除 2.7.0 遗留的实测结论：`AnimatedContent` 单插槽方案
+        versionCode = 25
+        versionName = "2.8.0"
     }
 
     buildFeatures {

@@ -1,6 +1,6 @@
 # OSPlus · Android 性能监视与调优工具
 
-包名 `com.osplus.tools` ｜ 版本 **2.7.0**（versionCode 24）｜ minSdk 33 (Android 13) ｜ targetSdk 36 ｜ compileSdk 37
+包名 `com.osplus.tools` ｜ 版本 **2.8.0**（versionCode 25）｜ minSdk 33 (Android 13) ｜ targetSdk 36 ｜ compileSdk 37
 
 完全自研的**本地**性能监视与调优工具。数据全部来自 `/proc`、`/sys` 与系统 API，
 **不做任何云端上报**；涉及内核写入的功能全部经 Root 执行。
@@ -15,6 +15,10 @@
 **概览 / 性能 / 帧率 / 电源** 四个一级页；**设置**挂在顶栏右侧。
 概览与性能页的卡片可下钻到 **内存 / GPU / CPU / 进程 / 性能调度** 五个二级页，
 设置页另有 **系统开关 / 提权管理** 两个三级页。
+
+二级页是盖在一级页之上的**全屏浮层**，支持 **Android 预测性返回**：
+从屏幕边缘右滑时，浮层跟手右移、缩角并轻微缩小，下面的一级页实时露出；
+手势拖回原位即取消，越过阈值才真正返回。
 
 | 一级页 | 一句话 |
 |---|---|
@@ -368,6 +372,78 @@ val viewing = viewingSamples.isNotEmpty()
 
 ---
 
+### 17. 预测性返回：进度不在回调参数里
+
+**背景**：Android 13 引入「预测性返回桌面」，Android 14 扩展到应用内。开启后，
+从屏幕边缘右滑的过程中系统要**提前展示**将要返回的上一页；手势未完成时用户
+能看到那一页正从左侧回来，也可以把手指拖回去取消。前提是 Manifest 里
+`android:enableOnBackInvokedCallback="true"`——本工程从 2.5.0 起就已置位。
+
+**第一个坑：`NavigationBackHandler` 不给进度。**
+
+```kotlin
+// 只有两个终态回调，手势滑动过程中的 progress 完全拿不到
+NavigationBackHandler(state, isBackEnabled, onBackCompleted, onBackCancelled)
+```
+
+拿不到进度，动画就只能等松手才播，退化成「瞬间切换」，与 Android 13 之前没有区别。
+进度实际藏在 `state.transitionState` 里：
+
+| 字段 | 含义 |
+|---|---|
+| `NavigationEventTransitionState.InProgress.latestEvent.progress` | 0f ~ 1f，手势越过阈值的比例 |
+| `.latestEvent.touchX / touchY` | 手指屏幕坐标，可驱动「返回箭头跟手」 |
+| `.latestEvent.swipeEdge` | `EDGE_LEFT` / `EDGE_RIGHT` / `EDGE_NONE` |
+
+所以 `PredictiveBack.kt` 用 `snapshotFlow { navState.transitionState }` 订阅，
+把它抽成对外可用的 `animatedProgress`。**手势中直接吃真实值**（零延迟跟手），
+**手势结束后改由 `Animatable` 平滑收尾**——两者必须分开，否则收尾动画会把
+实时值往回拽，表现为跟手迟滞。`onBackCompleted` 里不能调 `Animatable.stop()`：
+它是 `suspend` 函数，而回调不是协程上下文。
+
+**第二个坑：两级页面共用一个 `AnimatedContent` 插槽，让开之后会露底。**
+
+改造前 `screenKey = route ?: tabKey(rootTab)`，一级页与二级页是**同一个插槽的两个状态**。
+覆盖层让开时底下一片空白（`PageBackground` 也被一起移走了），接预测性返回必然穿帮。
+
+修法是把层级拆开：
+
+```
+Box
+├── 底层：一级页（常驻，永不卸载）  ← 手势让开时用户看到的就是它
+│   ├── PageBackground
+│   ├── RootTopBar
+│   ├── AnimatedContent(rootTab)  ← 一级页自己的切页动画
+│   └── LiquidBottomBar           ← 属于这一层，随浮层让开同步淡入
+└── 上层：路由浮层（route != null 时才存在）
+    ├── PageBackground
+    ├── OsTopBar(带返回箭头)
+    └── AnimatedContent(screenKey)
+```
+
+浮层的跟手变换全在 `graphicsLayer` 里，不触发重组，也不影响子内容布局：
+
+```kotlin
+translationX = backProgress * screenWidthPx * 0.32f   // 屏幕宽 32%
+scaleX = scaleY = 1f - backProgress * 0.06f           // 轻微缩小，给底层露出感
+shape = RoundedCornerShape(28.dp * backProgress)      // 圆角随进度长出来
+clip = backProgress > 0.001f                          // 静止态不裁，四角保持完整
+alpha = 1f - backProgress * 0.12f                     // 轻微压暗，强化被推走的层次
+```
+
+位移基准用 `LocalConfiguration.screenWidthDp` 换算，**不要读 Layout 尺寸**——
+后者首帧拿不到，第一次手势位移会是 0。
+
+**第三个坑：`isBackEnabled = false` 不是「禁用返回」。** 它表示「本处理器不接管」，
+系统会把这次手势回落给默认行为——在一级页边缘右滑时，正是靠它拿到
+**预测性返回桌面**。所以判据写 `route != null || rootTab != RootTab.Overview`，
+而不是无条件 true。
+
+**顶栏返回按钮与手势共用同一条路径**：两者都调用同一个 `popRoute()`，
+不会出现「按钮返回有动画、手势返回没有」这类不一致。
+
+---
+
 ## 四、工程结构
 
 ```
@@ -401,12 +477,13 @@ app/src/main/java/com/osplus/tools/
 ├── model/Models.kt              # 数据模型
 ├── vm/DeviceViewModel.kt        # 1 秒采样循环 + 累积趋势缓冲 + 全部控制入口
 ├── ui/
-│   ├── OsPlusApp.kt             # 根布局：路由栈 + 二级详情栈 + 液态玻璃底栏
+│   ├── OsPlusApp.kt             # 根布局：一级页常驻底层 + 路由浮层 + 预测性返回 + 液态玻璃底栏
 │   ├── theme/                   # OsTokens（设计令牌）、Theme
 │   ├── liquid/                  # Kyant0 原版组件移植件：LiquidButton / LiquidBottomTabs /
 │   │                            #   LiquidBottomTab / LiquidToggle / LiquidSlider / LiquidUtils
 │   ├── components/              # Surfaces / LiquidGlass（底栏·开关·滑块的适配层）/
-│   │                            #   GlassShaders / Charts / Navigation / PrivilegeComponents / Common
+│   │                            #   GlassShaders / Charts / Navigation / PrivilegeComponents /
+│   │                            #   PredictiveBack / Common
 │   └── screen/                  # Overview / Perf / Fps / Power / Settings /
 │                                #   SystemToggles / Privilege / LiquidLab / 详情页 / 性能调度
 ├── service/FpsOverlayService.kt # 跨应用监视前台服务：通知 / 悬浮窗 / 保活锚点
@@ -418,7 +495,7 @@ app/src/test/java/com/osplus/tools/
 └── GpuDataSourceTest.kt         # GPU 频率单位判定
 ```
 
-**60 个 Kotlin 文件 / 18289 行**（main 57 + test 3）。
+**61 个 Kotlin 文件 / 18727 行**（main 58 + test 3）。
 
 ---
 
@@ -505,6 +582,10 @@ adb exec-out "run-as com.osplus.tools cat databases/osplus_fps_watch" > fps.db
 10. **系统级帧率是约 0.5 秒窗口的平均值**，界面静止时读数天然是个位数（1~8 FPS），
     属正常现象。判断链路是否正常看「有值 + 随屏幕活动变化」，不看数字大小。
     该值读不到时会退回本应用自身的 `Choreographer` 值，并在界面标明当前用的是哪一路。
+11. **预测性返回的跟手动画只在 Android 14（API 34）及以上完整生效**。
+    API 33 只提供「预测性返回桌面」与返回完成的终态回调，滑动过程中的进度
+    不下发，因此覆盖层不会有跟手位移（返回本身仍然正常）。本机
+    （PJZ110 / Android 17）为完整支持。
 
 ---
 
