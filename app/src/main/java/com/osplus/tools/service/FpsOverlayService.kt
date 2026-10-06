@@ -166,13 +166,16 @@ class FpsOverlayService : Service() {
      */
     private fun refreshLiveReadouts() {
         overlayView?.text = buildOverlayText(currentOverlayValues())
-        // 形态不同字号不同：负载面板行多、字号略小；迷你模式更小
+        // 用户要求「大小改成现在的一半」——整体包围盒减半。
+        // 包围盒 ≈ 文字宽 + 左右内边距，字号与内边距各减半即可让宽高同时减半。
+        // 12→9sp / 11→8sp / 10→7sp：9sp 是密度无关像素下的可读下限，
+        // 再小在 1440p 屏幕上就只剩几个像素高、数值认不出来。
         overlayView?.setTextSize(
             TypedValue.COMPLEX_UNIT_SP,
             when (form) {
-                Preferences.OverlayForm.LOAD -> 12f
-                Preferences.OverlayForm.MINI -> 11f
-                Preferences.OverlayForm.PILL -> 14f
+                Preferences.OverlayForm.LOAD -> 8f
+                Preferences.OverlayForm.MINI -> 7f
+                Preferences.OverlayForm.PILL -> 9f
             },
         )
         updateNotification()
@@ -218,16 +221,33 @@ class FpsOverlayService : Service() {
     @SuppressLint("ClickableViewAccessibility")
     private fun addOverlay() {
         if (overlayView != null) return
-        // 圆角深色底 + 内边距：直接压在应用图标上时文字几乎不可读
+        // 透明毛玻璃底：半透明深色底 + 高光描边。
+        //
+        // **不要用 BLUR_BEHIND 做「胶囊内的模糊」**：`FLAG_BLUR_BEHIND` +
+        // `setBlurBehindRadius` 是**窗口级**能力，它模糊的是「窗口矩形范围内的背景」。
+        // 悬浮窗是 WRAP_CONTENT，窗口矩形≈胶囊本身，看似可行；但在真机上
+        // 合成分会按整个 layer 处理，实测把**整块屏幕**都糊掉了，而不是只糊胶囊内。
+        // 结果：桌面所有图标文字全变糊，用户在胶囊外的区域完全看不清——
+        // 这是比「背景是实色」严重得多的回归。
+        //
+        // 因此回到**纯 view 层**的做法：半透明深色底 + 一道高光描边，
+        // 靠低不透明度让背后内容「透出来」，形成磨砂观感，作用域严格限制在胶囊内。
         val background = GradientDrawable().apply {
-            setColor(Color.parseColor("#CC101014"))
-            cornerRadius = 20f * resources.displayMetrics.density
-            setStroke((1f * resources.displayMetrics.density).toInt(), Color.parseColor("#33FFFFFF"))
+            // 半透明深色（54%）：既透出背后画面，又保证白字有足够对比度
+            setColor(Color.parseColor("#8A101014"))
+            // 圆角从 20dp 收到 14dp：配合下方内边距收紧，整块胶囊明显小一圈。
+            // 20dp 时高度约 42dp 的胶囊圆角已经接近半高，视觉上是个「胖药丸」，
+            // 压在状态栏或图标上占位过大。
+            cornerRadius = 7f * resources.displayMetrics.density
+            // 描边提亮：半透明底之上靠这道 1px 高光把玻璃边界「立」起来
+            setStroke((1f * resources.displayMetrics.density).toInt(), Color.parseColor("#4DFFFFFF"))
         }
         val view = TextView(this).apply {
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setPadding(26, 12, 26, 12)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+            // 内边距 26/12 → 7/3：与字号同步减半，保证整体包围盒≈原尺寸的一半。
+            // 7dp 左右留白在 9sp 下正好托住数字不贴边。
+            setPadding(7, 3, 7, 3)
             // 首帧占位：具体数值由 LiveMetrics 的第一次采样填入
             text = "--"
             this.background = background
@@ -443,7 +463,13 @@ class FpsOverlayService : Service() {
             Preferences.OverlayForm.MINI ->
                 if (s.cpuLoad < 0f) "--·${"%.0f".format(v.fps)}f"
                 else "${"%.0f".format(s.cpuLoad)}%·${"%.0f".format(v.fps)}f"
-            else -> v.metrics.joinToString("   ") { compact(it, s, v.fps) }
+            // PILL（胶囊）：默认形态，一行横排最多 3 项。
+            //
+            // 间隔由「三个空格」收到「一个空格 + 两侧内边距收紧」：
+            // 三个空格在 12sp 下是约 11dp 空档，三项之间共 22dp。
+            // 配合字号 13→12sp、内边距 18/8→14/6，整块横条再缩约 20%。
+            // 一个空格仍能分清三项（每项自带 % / MHz 等单位后缀，边界清晰）。
+            else -> v.metrics.joinToString(" ") { compact(it, s, v.fps) }
         }
         if (!v.recording) return body
         val sb = SpannableStringBuilder()

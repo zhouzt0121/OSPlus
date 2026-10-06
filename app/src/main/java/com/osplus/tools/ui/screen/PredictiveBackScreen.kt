@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.osplus.tools.core.Preferences
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.NumberInputField
@@ -185,10 +187,9 @@ fun PredictiveBackScreen() {
                 Column(Modifier.padding(vertical = 5.dp)) {
                     CardSectionLabel("恢复")
                     Spacer(Modifier.height(8.dp))
-                    LiquidNavTabs(
-                        items = listOf("全部恢复默认"),
-                        selectedIndex = -1,
-                        onSelect = {
+                    ActionButton(
+                        text = "全部恢复默认",
+                        onClick = {
                             Preferences.setBackTranslationRatio(
                                 context, Preferences.DEFAULT_BACK_TRANSLATION_RATIO,
                             )
@@ -211,6 +212,8 @@ fun PredictiveBackScreen() {
                             settleText = Preferences.DEFAULT_BACK_SETTLE_MS.toString()
                             dimText = fmt(Preferences.DEFAULT_BACK_DIM_AMOUNT)
                         },
+                        filled = true,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }

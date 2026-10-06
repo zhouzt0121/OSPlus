@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.FpsSessionStats
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.InfoRow
@@ -119,12 +120,10 @@ fun FpsAnalysisScreen(vm: DeviceViewModel) {
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(12.dp))
-                    LiquidNavTabs(
-                        items = listOf("保存为图片"),
-                        selectedIndex = -1,
-                        onSelect = {
-                            vm.exportFpsCard(session, s, screenCropLabel(context))
-                        },
+                    ActionButton(
+                        text = "保存为图片",
+                        onClick = { vm.exportFpsCard(session, s, screenCropLabel(context)) },
+                        modifier = Modifier.fillMaxWidth(),
                     )
                     cardPath?.let {
                         Spacer(Modifier.height(8.dp))

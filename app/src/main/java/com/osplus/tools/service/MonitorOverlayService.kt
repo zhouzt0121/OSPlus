@@ -494,14 +494,20 @@ class MonitorOverlayService : Service() {
             typeface = android.graphics.Typeface.MONOSPACE
             text = "--"
         }
-        // 帧率监视器：**不要标题，只要一个大号帧率数字**。
-        // 它的用法是「瞄一眼现在多少帧」，标题占的那一行是纯噪声；
-        // 数字放大到 30sp 后从远处一眼可读，才是这个窗口该有的形态。
+        // 帧率监视器：**不要标题，只要一个帧率数字**。
+        // 它的用法是「瞄一眼现在多少帧」，标题占的那一行是纯噪声。
+        //
+        // 字号 30sp → 18sp：30sp 在 640dpi 真机上会把窗口撑到 348×232px
+        // （约 87×58dp），压在桌面上是一块很大的方块，用户两次反馈「太大」。
+        // 18sp 粗体等宽下，「120.0」约 5 字符 × ~21px ≈ 105px，窗口缩到约 200×90px，
+        // 明显小一圈而远处仍可读。
+        // 同时**不带内边距**：帧率窗口只有一个数字，14/9dp 的留白纯属浪费面积，
+        // 数字直接贴到圆角玻璃边上，玻璃底本身就是视觉留白。
         // 录制开关改由「点击窗口」触发（见 attachTouchHandler），
         // 因此窗口上也不再需要「记录中」这类状态文字。
         if (kind == MonitorKind.Fps) {
             titleView.visibility = View.GONE
-            bodyView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
+            bodyView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
             bodyView.typeface = android.graphics.Typeface.create(
                 android.graphics.Typeface.MONOSPACE,
                 android.graphics.Typeface.BOLD,
@@ -509,11 +515,13 @@ class MonitorOverlayService : Service() {
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            // 帧率窗口内边距收窄（14/9 → 8/4dp）；其余监视器行多，保留原留白
+            val (hPad, vPad) = if (kind == MonitorKind.Fps) 8 to 4 else 14 to 9
             setPadding(
-                (14 * density).toInt(),
-                (9 * density).toInt(),
-                (14 * density).toInt(),
-                (9 * density).toInt(),
+                (hPad * density).toInt(),
+                (vPad * density).toInt(),
+                (hPad * density).toInt(),
+                (vPad * density).toInt(),
             )
             background = makeWindowBackground(FpsRecorder.recording.value)
             elevation = 8f * density
@@ -559,12 +567,18 @@ class MonitorOverlayService : Service() {
     private fun makeWindowBackground(recording: Boolean): GradientDrawable {
         val density = resources.displayMetrics.density
         return GradientDrawable().apply {
-            setColor(Color.parseColor("#CC101014"))
+            // 半透明深色底（54%）：透出背后内容形成磨砂观感，同时保证白字可读。
+            //
+            // **不要改用窗口级 FLAG_BLUR_BEHIND 来「真正模糊背景」**：
+            // 它是窗口矩形级能力，在 WRAP_CONTENT 悬浮窗上实测会把整个屏幕 layer
+            // 一起糊掉（详见 FpsOverlayService.addOverlay 的注释）。
+            // 磨砂感靠「低不透明度 + 高光描边」在 view 层实现，作用域严格限于窗口内。
+            setColor(Color.parseColor("#8A101014"))
             cornerRadius = 14f * density
             // 录制中：红色描边（与「● 记录中」同一红），一眼可辨
             setStroke(
                 (1.5f * density).toInt(),
-                if (recording) RECORDING_DOT_COLOR else Color.parseColor("#33FFFFFF"),
+                if (recording) RECORDING_DOT_COLOR else Color.parseColor("#4DFFFFFF"),
             )
         }
     }

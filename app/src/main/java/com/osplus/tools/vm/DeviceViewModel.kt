@@ -1153,10 +1153,13 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     val batteryEnergy: StateFlow<BatteryEnergy> = _batteryEnergy.asStateFlow()
 
     /**
-     * 电源页当前页签。
+     * 电池会话页签（0 = 耗电统计，1 = 充电统计）。
      *
      * 放在 ViewModel 而不是页面里：顶栏由根布局渲染，要根据它决定
      * 是否显示「复制 / 删除本次记录」两个动作——页内状态无法被顶栏读到。
+     *
+     * **只表达电池会话内部的两个子页签**，不表达「记录页当前是帧率会话还是电池会话」。
+     * 2.9.0 曾把这两个语义混用一个字段，导致子页签点不动（见 [recordsTab] 注释）。
      */
     private val _powerTab = MutableStateFlow(0)
     val powerTab: StateFlow<Int> = _powerTab.asStateFlow()
@@ -1164,6 +1167,29 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
     fun setPowerTab(index: Int) {
         _powerTab.value = index
     }
+
+    /**
+     * 记录一级页的子页签（0 = 帧率会话，1 = 电池会话）。
+     *
+     * 与 [powerTab] 分开存的原因值得记一笔：两者语义不同、取值空间也不同
+     * （外层 0/1 是「哪一类会话」，内层 0/1 是「哪一张明细表」）。
+     * 2.9.0 初版让两处共用 `powerTab`，结果是**电池会话里的「耗电统计」页签点了没反应**——
+     * 点它写 `powerTab = 0`，外层 `RecordsScreen` 的同步逻辑读到「不一样」又写回 1，
+     * 内层随即被改回「充电统计」，界面看起来就是完全没响应。
+     * 这类「两层导航复用同一个索引」的坑只在两层取值恰好重叠时才会显形，
+     * 分开存是唯一稳妥的解法。
+     */
+    private val _recordsTab = MutableStateFlow(0)
+    val recordsTab: StateFlow<Int> = _recordsTab.asStateFlow()
+
+    fun setRecordsTab(index: Int) {
+        _recordsTab.value = index
+    }
+
+    /** 记录页是否停在电池会话（顶栏据此显示「复制 / 删除本次记录」） */
+    val onPowerSession: StateFlow<Boolean> = _recordsTab
+        .map { it == 1 }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     /** 开始录制。会先清空上一次记录，避免两次录制的曲线接在一起 */
     fun startPowerRecording() {

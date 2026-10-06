@@ -38,6 +38,7 @@ import com.osplus.tools.core.LiveNotif
 import com.osplus.tools.core.NotifMetric
 import com.osplus.tools.core.PrivilegeCapabilities
 import com.osplus.tools.core.Shell
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChoiceChip
 import com.osplus.tools.ui.components.InfoRow
@@ -116,63 +117,24 @@ fun SettingsScreen(
         contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // 提权相关的一切都在「提权管理」页，本页不出现第二份。
+        // ====================================================================
+        // 信息架构 2.9.0：按提案的 9 类归并重排。
         //
-        // 演进过程值得记一笔：这里原先内联了完整的提权模式卡
-        // （模式选择 + Shizuku 授权 + ADB 配对表单 + 电脑脚本生成），
-        // 后来新增独立提权页时又渲染了同一张卡 —— 同一套流程出现在两处，
-        // 用户不知道以哪边为准，改需求时也必然只改一边。
-        // 现在只保留下方「系统调优」卡的一行入口。
+        // 顺序即优先级：先「基础设置」（每天都要动的采样与主题），再「通知与后台」，
+        // 然后「权限与 Root」——它被从原来的中段提到第三位，因为 2.6.1 起
+        // Shizuku/ADB 通道整体移除后，"有没有 root" 直接决定后面一半页面是可用还是置灰。
+        // 末尾放「实验室 / 关于 / 说明」：低频、且不需要和常用项混在一起。
+        //
+        // 每一类都是一张独立的 SectionCard + CardSectionLabel，扫视时按标题定位，
+        // 不再出现原来「一张卡里塞十项、另一张卡没有标题」的参差。
+        // ====================================================================
 
+        // ---------------- 01 基础设置 ----------------
         item {
             SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
-                    InfoRow(
-                        label = "使用情况访问",
-                        value = if (usageAccess) "已授权" else "未授权",
-                    )
-                    InfoRow(
-                        label = "悬浮窗",
-                        value = if (overlayGranted) "已授权" else "未授权",
-                    )
-                    InfoRow("通知", value = "安装后首次启动申请")
-                    Spacer(Modifier.height(8.dp))
-                    // 与底栏同语言的动作条，与页面背景明显区分
-                    LiquidNavTabs(
-                        items = listOf("使用情况访问", "悬浮窗权限"),
-                        selectedIndex = -1,
-                        onSelect = {
-                            if (it == 0) openUsageAccess(context) else openOverlayAccess(context)
-                        },
-                    )
-                }
-            }
-        }
-
-        item {
-            SectionCard {
-                Column(Modifier.padding(vertical = 5.dp)) {
-                    CardSectionLabel("主题")
-                    Spacer(Modifier.height(8.dp))
-                    LiquidNavTabs(
-                        items = AppThemeMode.entries.map { it.label },
-                        selectedIndex = AppThemeMode.entries.indexOf(themeMode),
-                        onSelect = { vm.setThemeMode(AppThemeMode.entries[it]) },
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    SwitchRow(
-                        label = "壁纸取色（Monet）",
-                        summary = "从壁纸提取主题色；关闭后使用中性配色，数据可读性更好",
-                        checked = monet,
-                        onCheckedChange = { vm.setMonet(it) },
-                    )
-                }
-            }
-        }
-
-        item {
-            SectionCard {
-                Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("基础设置")
+                    Spacer(Modifier.height(3.dp))
                     SwitchRow(
                         label = "实时采样",
                         summary = "每秒采样一次，实时趋势以折线绘制，记录时长随采样持续增长",
@@ -181,20 +143,19 @@ fun SettingsScreen(
                     )
                     InfoRow("采样间隔", "${DeviceViewModelInterval()} 毫秒")
                     InfoRow("记录上限", "30 分钟（1800 条）")
-                }
-            }
-        }
 
-        // 功率校准（复刻 Metric 的 Battery 设置组）：
-        // 内核电流节点口径因 SoC 而异，串联双电芯机型只报单节电压——
-        // 两个开关修正所有 Power 展示（悬浮窗 PWR、耗电统计、充电速度）。
-        // 判据来自 Metric 文档：Power 长期 0.00W、充放方向相反、功率明显偏大/偏小
-        // 或双电芯机型功率只有预期一半时，先调这两项。
-        item {
-            SectionCard {
-                Column(Modifier.padding(vertical = 5.dp)) {
+                    Spacer(Modifier.height(14.dp))
+                    // 功率校准（复刻 Metric 的 Battery 设置组）：
+                    // 内核电流节点口径因 SoC 而异，串联双电芯机型只报单节电压——
+                    // 两个开关修正所有 Power 展示（悬浮窗 PWR、耗电统计、充电速度）。
+                    // 判据来自 Metric 文档：Power 长期 0.00W、充放方向相反、功率明显偏大/偏小
+                    // 或双电芯机型功率只有预期一半时，先调这两项。
+                    //
+                    // 归入「基础设置」而不是「调优」：它改的是**读数的换算口径**，
+                    // 不是设备行为。放进调优页会和「写内核节点」的操作混为一谈，
+                    // 让人以为改这里会影响功耗本身。
                     CardSectionLabel("功率校准")
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(3.dp))
                     var factorText by remember {
                         mutableStateOf(
                             run {
@@ -228,11 +189,57 @@ fun SettingsScreen(
             }
         }
 
+        // ---------------- 02 权限与 Root ----------------
+        //
+        // 提权相关的一切都在「提权管理」页，本页不出现第二份。
+        //
+        // 演进过程值得记一笔：这里原先内联了完整的提权模式卡
+        // （模式选择 + Shizuku 授权 + ADB 配对表单 + 电脑脚本生成），
+        // 后来新增独立提权页时又渲染了同一张卡 —— 同一套流程出现在两处，
+        // 用户不知道以哪边为准，改需求时也必然只改一边。
+        // 现在只保留授权状态速览 + 一行入口。
         item {
             SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
-                    CardSectionLabel("实时任务通知")
-                    Spacer(Modifier.height(8.dp))
+                    CardSectionLabel("权限与 Root")
+                    Spacer(Modifier.height(3.dp))
+                    InfoRow(
+                        label = "使用情况访问",
+                        value = if (usageAccess) "已授权" else "未授权",
+                    )
+                    InfoRow(
+                        label = "悬浮窗",
+                        value = if (overlayGranted) "已授权" else "未授权",
+                    )
+                    InfoRow("通知", value = "安装后首次启动申请")
+                    SettingEntryRow(
+                        title = "提权管理",
+                        summary = "Root 授权状态、能力速查与探测明细",
+                        onClick = onOpenPrivilege,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ActionButton(
+                            text = "使用情况访问",
+                            onClick = { openUsageAccess(context) },
+                            modifier = Modifier.weight(1f),
+                        )
+                        ActionButton(
+                            text = "悬浮窗权限",
+                            onClick = { openOverlayAccess(context) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
+
+        // ---------------- 03 通知与后台 ----------------
+        item {
+            SectionCard {
+                Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("通知与后台")
+                    Spacer(Modifier.height(3.dp))
                     SwitchRow(
                         label = "实时任务通知",
                         summary = "开启：以系统实时任务通知呈现，状态栏芯片常驻、通知抽屉置顶，无需悬浮窗权限；" +
@@ -262,10 +269,10 @@ fun SettingsScreen(
                             onToggle = { vm.toggleNotifMetric(it) },
                         )
                         Spacer(Modifier.height(11.dp))
-                        LiquidNavTabs(
-                            items = listOf("恢复默认显示项"),
-                            selectedIndex = -1,
-                            onSelect = { vm.resetNotifMetrics() },
+                        ActionButton(
+                            text = "恢复默认显示项",
+                            onClick = { vm.resetNotifMetrics() },
+                            modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(9.dp))
                         Text(
@@ -319,9 +326,94 @@ fun SettingsScreen(
             }
         }
 
+        // ---------------- 04 主题与外观 ----------------
+        item {
+            SectionCard {
+                Column(Modifier.padding(vertical = 5.dp)) {
+                    CardSectionLabel("主题与外观")
+                    Spacer(Modifier.height(3.dp))
+                    LiquidNavTabs(
+                        items = AppThemeMode.entries.map { it.label },
+                        selectedIndex = AppThemeMode.entries.indexOf(themeMode),
+                        onSelect = { vm.setThemeMode(AppThemeMode.entries[it]) },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    SwitchRow(
+                        label = "壁纸取色（Monet）",
+                        summary = "从壁纸提取主题色；关闭后使用中性配色，数据可读性更好",
+                        checked = monet,
+                        onCheckedChange = { vm.setMonet(it) },
+                    )
+                }
+            }
+        }
+
+        // ---------------- 05 系统开关 ----------------
         item {
             SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("系统开关")
+                    Spacer(Modifier.height(3.dp))
+                    SettingEntryRow(
+                        title = "系统开关",
+                        summary = "动画缩放、状态栏图标、开发者选项等",
+                        onClick = onOpenSystemToggles,
+                    )
+                }
+            }
+        }
+
+        // ---------------- 06 预测性返回 ----------------
+        item {
+            SectionCard {
+                Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("预测性返回")
+                    Spacer(Modifier.height(3.dp))
+                    SettingEntryRow(
+                        title = "预测性返回",
+                        summary = "跟手位移、缩放、圆角、回弹耗时等动画参数",
+                        onClick = onOpenPredictiveBack,
+                    )
+                }
+            }
+        }
+
+        // ---------------- 07 悬浮窗管理 ----------------
+        item {
+            SectionCard {
+                Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("悬浮窗管理")
+                    Spacer(Modifier.height(3.dp))
+                    SettingEntryRow(
+                        title = "悬浮窗管理器",
+                        summary = "负载 / 进程 / 线程 / 迷你 / 帧率记录 / 温度，6 个独立监视器悬浮窗",
+                        onClick = onOpenOverlayManager,
+                    )
+                }
+            }
+        }
+
+        // ---------------- 08 实验室 ----------------
+        item {
+            SectionCard {
+                Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("实验室")
+                    Spacer(Modifier.height(3.dp))
+                    SettingEntryRow(
+                        title = "Kyant 原版组件实验室",
+                        summary = "LiquidButton / LiquidBottomTabs / LiquidSlider / LiquidToggle 原版实现",
+                        onClick = onOpenLiquidLab,
+                    )
+                }
+            }
+        }
+
+        // ---------------- 09 关于 ----------------
+        item {
+            SectionCard {
+                Column(Modifier.padding(vertical = 3.dp)) {
+                    CardSectionLabel("关于")
+                    Spacer(Modifier.height(3.dp))
                     InfoRow("应用", "OSPlus")
                     // 版本号读 BuildConfig，不写死：写死的版本号在每次发版后
                     // 都会和「设置 → 关于」以及安装包对不上，用户报障时给的是错信息
@@ -335,54 +427,14 @@ fun SettingsScreen(
             }
         }
 
-        item {
-            SectionCard {
-                Column(Modifier.padding(vertical = 3.dp)) {
-                    CardSectionLabel("系统调优")
-                    Spacer(Modifier.height(8.dp))
-                    SettingEntryRow(
-                        title = "提权管理",
-                        summary = "Root 授权状态、能力速查与探测明细",
-                        onClick = onOpenPrivilege,
-                    )
-                    SettingEntryRow(
-                        title = "系统开关",
-                        summary = "动画缩放、状态栏图标、开发者选项等",
-                        onClick = onOpenSystemToggles,
-                    )
-                    SettingEntryRow(
-                        title = "预测性返回",
-                        summary = "跟手位移、缩放、圆角、回弹耗时等动画参数",
-                        onClick = onOpenPredictiveBack,
-                    )
-                    SettingEntryRow(
-                        title = "悬浮窗管理器",
-                        summary = "负载 / 进程 / 线程 / 迷你 / 帧率记录 / 温度，6 个独立监视器悬浮窗",
-                        onClick = onOpenOverlayManager,
-                    )
-                }
-            }
-        }
-
-        item {
-            SectionCard {
-                Column(Modifier.padding(vertical = 3.dp)) {
-                    CardSectionLabel("实验")
-                    Spacer(Modifier.height(8.dp))
-                    SettingEntryRow(
-                        title = "Kyant 原版组件实验室",
-                        summary = "LiquidButton / LiquidBottomTabs / LiquidSlider / LiquidToggle 原版实现",
-                        onClick = onOpenLiquidLab,
-                    )
-                }
-            }
-        }
-
+        // 提案把它单独列为第 9 类「说明」，与「关于」并列。
+        // 这里仍拆成两张卡：关于是「事实」（可复制去报障），说明是「口径」（解释数据从哪来），
+        // 混在一起会让报障时找版本号要多扫三行免责文字。
         item {
             SectionCard {
                 Column(Modifier.padding(vertical = 3.dp)) {
                     CardSectionLabel("说明")
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(3.dp))
                     Text(
                         text = "· 数据全部来自 /proc、/sys 与系统 API，不做任何云端上报。\n" +
                             "· 频率控制直接写入内核节点，不同机型可用项存在差异。\n" +

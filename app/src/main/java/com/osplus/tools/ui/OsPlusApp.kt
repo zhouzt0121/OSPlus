@@ -11,9 +11,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ShowChart
-import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -44,15 +44,15 @@ import com.osplus.tools.ui.components.PageBackground
 import com.osplus.tools.ui.components.rememberPredictiveBackState
 import com.osplus.tools.ui.screen.CpuDetailScreen
 import com.osplus.tools.ui.screen.FpsAnalysisScreen
-import com.osplus.tools.ui.screen.FpsScreen
 import com.osplus.tools.ui.screen.LiquidLabScreen
 import com.osplus.tools.ui.screen.GpuDetailScreen
 import com.osplus.tools.ui.screen.MemDetailScreen
+import com.osplus.tools.ui.screen.MonitorScreen
 import com.osplus.tools.ui.screen.OverviewDetail
 import com.osplus.tools.ui.screen.OverviewScreen
-import com.osplus.tools.ui.screen.PerfScreen
+import com.osplus.tools.ui.screen.RecordsScreen
+import com.osplus.tools.ui.screen.TuningScreen
 import com.osplus.tools.ui.screen.PerfSchedScreen
-import com.osplus.tools.ui.screen.PowerScreen
 import com.osplus.tools.ui.screen.OverlayManagerScreen
 import com.osplus.tools.ui.screen.PredictiveBackScreen
 import com.osplus.tools.ui.screen.PrivilegeScreen
@@ -69,11 +69,21 @@ import com.kyant.backdrop.backdrops.emptyBackdrop
 /**
  * 底部悬浮导航的一级页面。
  *
- * 四页全部留给监控数据：概览 / 性能 / 帧率 / 电源。
- * 设置被移出导航栏，改挂顶栏右侧的动作区——它是低频入口，
- * 占用底栏的一格等于把 25% 的导航面积交给了一个月可能只点一次的功能。
+ * 按**用户任务**切分，而不是按技术模块切分（2.9.0 信息架构重构）：
+ *
+ * - **总览** 回答「设备现在怎么样」——结论 + 摘要，不承担操作；
+ * - **监测** 回答「现在发生了什么」——实时指标与趋势，**只读**，不放调参控件；
+ * - **调优** 回答「我想调整设备表现」——所有会改变设备行为的控件集中于此；
+ * - **记录** 回答「刚才发生了什么」——录制的历史会话与分析。
+ *
+ * 这次重构的直接动因：旧结构里「性能」一词同时指实时性能数据与性能调优，
+ * 两件事混在一页；「帧率」与「电源」各占一格底栏，但它们的本质是
+ * 「一条被录制下来的会话」，与实时监控不是同一类东西。
+ *
+ * 设置仍挂在顶栏右侧齿轮——它是低频入口，占底栏一格等于把 25% 的导航面积
+ * 交给一个月可能只点一次的功能。
  */
-private enum class RootTab { Overview, Perf, Fps, Power }
+private enum class RootTab { Overview, Monitor, Tuning, Records }
 
 /** 一级页之外的二级路由。设置与详情页共用同一层，保证返回手势行为一致。 */
 private const val RouteSettings = "Settings"
@@ -83,6 +93,23 @@ private const val RoutePrivilege = "Privilege"
 private const val RoutePredictiveBack = "PredictiveBack"
 private const val RouteOverlayManager = "OverlayManager"
 private const val RouteFpsAnalysis = "FpsAnalysis"
+
+/**
+ * 二级页的**归属页签**。
+ *
+ * 用来在根布局里按当前页签决定「该露出哪些二级路由」，以及顶栏动作该显示哪一组。
+ * 之前这套判断是散在各处的 `route == RouteXxx` 硬编码串，页签一改就要改多处；
+ * 收成一张表后，新增二级页只需在表里登记一行。
+ */
+private val ROUTE_OWNER: Map<String, RootTab> = mapOf(
+    RouteSettings to RootTab.Overview,
+    RouteLiquidLab to RootTab.Overview,
+    RouteSystemToggles to RootTab.Overview,
+    RoutePrivilege to RootTab.Overview,
+    RoutePredictiveBack to RootTab.Overview,
+    RouteOverlayManager to RootTab.Overview,
+    RouteFpsAnalysis to RootTab.Records,
+)
 
 private fun tabKey(tab: RootTab) = "tab-${tab.name}"
 
@@ -131,7 +158,8 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
         val fpsRecording by viewModel.fpsRecording.collectAsStateWithLifecycle()
         // 电源页顶栏动作需要知道当前页签与是否已有记录。
         // 只订阅布尔量：直接订阅每秒变化的样本列表会让整个根布局跟着每秒重组
-        val powerTab by viewModel.powerTab.collectAsStateWithLifecycle()
+        // 顶栏只关心「记录页是否停在电池会话」，用专用布尔而不是子页签索引
+        val onPowerSession by viewModel.onPowerSession.collectAsStateWithLifecycle()
         val powerHasRecord by viewModel.powerHasRecord.collectAsStateWithLifecycle()
         val c = osColors()
 
@@ -161,11 +189,12 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
             route == RoutePredictiveBack -> "预测性返回"
             route == RouteOverlayManager -> "悬浮窗管理器"
             route == RouteFpsAnalysis -> "录制记录分析"
+            route == RouteLiquidLab -> "液态玻璃实验室"
             detail != null -> detail.title
-            rootTab == RootTab.Overview -> "概览"
-            rootTab == RootTab.Perf -> "性能"
-            rootTab == RootTab.Fps -> "帧率"
-            else -> "电源"
+            rootTab == RootTab.Overview -> "总览"
+            rootTab == RootTab.Monitor -> "监测"
+            rootTab == RootTab.Tuning -> "调优"
+            else -> "记录"
         }
 
         // 内容层先渲染进 GraphicsLayer 并记录下来，悬浮控件据此做真实背景模糊（液态玻璃）。
@@ -222,12 +251,14 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                         onOpenSettings = { pushRoute(RouteSettings) },
                         onStartFps = {
                             viewModel.startFpsRecording()
-                            rootTab = RootTab.Fps
+                            // 开始记录后跳到「记录」页：录制是一次会话，
+                            // 用户接下来要做的是看它，而不是留在总览盯着一个不动的摘要
+                            rootTab = RootTab.Records
                         },
                         backdrop = topBarBackdrop,
                         rootAvailable = rootAvailable,
                         fpsRecording = fpsRecording,
-                        powerTab = powerTab,
+                        onPowerSession = onPowerSession,
                         powerHasRecord = powerHasRecord,
                         onCleanMem = { viewModel.cleanMemCaches() },
                         onCleanSwap = { viewModel.cleanSwap() },
@@ -249,16 +280,36 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                                     RootTab.Overview -> OverviewScreen(
                                         vm = viewModel,
                                         onOpen = { pushRoute(it.name) },
-                                        onOpenPower = { rootTab = RootTab.Power },
-                                        onOpenFps = { rootTab = RootTab.Fps },
+                                        onOpenMonitor = { rootTab = RootTab.Monitor },
+                                        onOpenRecords = { rootTab = RootTab.Records },
+                                        onStartFps = { viewModel.startFpsRecording() },
+                                        onOpenOverlayManager = {
+                                            pushRoute(RouteOverlayManager)
+                                        },
                                     )
 
-                                    RootTab.Perf -> PerfScreen(viewModel) { pushRoute(it.name) }
-                                    RootTab.Fps -> FpsScreen(
-                                        viewModel,
+                                    RootTab.Monitor -> MonitorScreen(
+                                        vm = viewModel,
+                                        onOpen = { pushRoute(it.name) },
+                                        // 监测页只读；悬浮监视器的开关/外观/位置
+                                        // 统一在悬浮窗管理器里配置
+                                        onOpenOverlayManager = {
+                                            pushRoute(RouteOverlayManager)
+                                        },
+                                    )
+
+                                    RootTab.Tuning -> TuningScreen(
+                                        vm = viewModel,
+                                        onOpen = { pushRoute(it.name) },
+                                        // 调优页的「查看提权管理」直连提权页，
+                                        // 不再要求用户先绕到设置页再下钻
+                                        onOpenPrivilege = { pushRoute(RoutePrivilege) },
+                                    )
+
+                                    RootTab.Records -> RecordsScreen(
+                                        vm = viewModel,
                                         onOpenAnalysis = { pushRoute(RouteFpsAnalysis) },
                                     )
-                                    RootTab.Power -> PowerScreen(viewModel)
                                 }
                             }
                         }
@@ -281,10 +332,10 @@ fun OsPlusApp(viewModel: DeviceViewModel = viewModel()) {
                     // 用 Filled 而不是 Rounded：底栏图标只有 22dp，
                     // 描边式在这么小的尺寸上线条会细到发虚、四个图标粗细也不一致；
                     // 填充式在 22dp 下的辨识度明显更高。
-                    LiquidBarItem("概览", Icons.Filled.Dashboard),
-                    LiquidBarItem("性能", Icons.Filled.Speed),
-                    LiquidBarItem("帧率", Icons.AutoMirrored.Filled.ShowChart),
-                    LiquidBarItem("电源", Icons.Filled.BatteryFull),
+                    LiquidBarItem("总览", Icons.Filled.Dashboard),
+                    LiquidBarItem("监测", Icons.Filled.Speed),
+                    LiquidBarItem("调优", Icons.Filled.Tune),
+                    LiquidBarItem("记录", Icons.AutoMirrored.Filled.ShowChart),
                 ),
                 selectedIndex = rootTab.ordinal,
                 onSelect = {
@@ -448,16 +499,16 @@ private fun RootTopBar(
     backdrop: com.kyant.backdrop.Backdrop,
     rootAvailable: Boolean,
     fpsRecording: Boolean,
-    powerTab: Int,
+    onPowerSession: Boolean,
     powerHasRecord: Boolean,
 ) {
     val c = osColors()
     OsTopBar(
         title = when (rootTab) {
-            RootTab.Overview -> "概览"
-            RootTab.Perf -> "性能"
-            RootTab.Fps -> "帧率"
-            RootTab.Power -> "电源"
+            RootTab.Overview -> "总览"
+            RootTab.Monitor -> "监测"
+            RootTab.Tuning -> "调优"
+            RootTab.Records -> "记录"
         },
         backdrop = backdrop,
         actions = {
@@ -494,10 +545,10 @@ private fun RootTopBar(
                     backdrop = backdrop,
                 )
             }
-            // 电源页的「耗电统计」页签上，把复制 / 删除放在顶栏右侧：
+            // 「记录」页的帧率会话页签上，把复制 / 删除放在顶栏右侧：
             // 这两个动作针对「本次记录」这个全局对象，属于页面级操作，
             // 而页面内的操作条会随列表滚动跑出屏幕
-            if (rootTab == RootTab.Power && powerTab == 0) {
+            if (rootTab == RootTab.Records && onPowerSession) {
                 OsTopBarAction(
                     icon = Icons.Rounded.ContentCopy,
                     contentDescription = "复制本次耗电记录",

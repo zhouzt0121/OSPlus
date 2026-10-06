@@ -99,14 +99,40 @@ object PerfSchedDataSource {
 
     // ------------------------------------------------------------------ 读取
 
-    /** 一次性读取两个模块的状态 */
+    /**
+     * 一次性读取两个模块的状态。
+     *
+     * **判据必须是 try-read，不能用 `[ -d ]`**。
+     *
+     * 初版这里写的是：
+     * ```
+     * [ -d "$U" ] || U=/sdcard/...
+     * [ -d /data/adb/modules/uperf ] && echo 1 || echo 0
+     * ```
+     * 两处都是「目录存在性」判据，而这个项目已在
+     * `charge_full_design`、`measured_fps`、zram 列举上各踩过一次同类问题：
+     * Android 12+ 的 SELinux 对厂商路径（`/data/adb` 尤其明显）拒绝 stat 父目录，
+     * `-d` 会**恒假**——模块装得好好的，这里却判定「未安装」。
+     * 表现就是用户看到的「性能调度读取不到」。
+     *
+     * 现在改为：直接 cat 目标文件，由解析器裁决内容是否合法。
+     * 文件读得到 → 模块已装；读不到 → 才是真没装。
+     * uperf.json 是模块的必需文件（开关/档位/分应用规则都从它派生），
+     * 用它当存在性替身比 `cur_powermode.txt` 更稳：后者只有用户切过档位才存在。
+     */
     suspend fun read(): Pair<UperfState, AsoulState> {
         val script = buildString {
+            // 候选目录不靠 `-d` 判断，两个都直接试读，谁先读到内容就用谁。
+            // `/data/media/0` 是 `/sdcard` 背后的真实路径，root 直读更稳。
             append("U=").append(UPERF_DIR).append('\n')
-            append("[ -d \"\$U\" ] || U=").append(UPERF_DIR_ALT).append('\n')
+            append("[ -f \"\$U/uperf.json\" ] || U=").append(UPERF_DIR_ALT).append('\n')
 
             append("echo '##UP_INST'\n")
-            append("[ -d ").append(UPERF_MODULE).append(" ] && echo 1 || echo 0\n")
+            // try-read 判据：uperf.json 能读到即视为已安装。
+            // 用 `cat ... | head -c1` 而不是 `[ -f ]`——后者同样依赖 stat，
+            // 在 SELinux 拒绝的路径上不可靠。
+            append("if [ -n \"\$(cat \"\$U/uperf.json\" 2>/dev/null | head -c 1)\" ] || " +
+                "pidof uperf >/dev/null 2>&1; then echo 1; else echo 0; fi\n")
             append("echo '##UP_PID'\n")
             append("pidof uperf 2>/dev/null\n")
             append("echo '##UP_MODE'\n")
@@ -120,7 +146,10 @@ object PerfSchedDataSource {
             append("echo '##UP_END'\n")
 
             append("echo '##AS_INST'\n")
-            append("[ -d ").append(ASOUL_MODULE).append(" ] && echo 1 || echo 0\n")
+            // 同上：ASOUL_CONF 能读到即视为已安装，不用 `[ -d ]`
+            append("if [ -n \"\$(cat ").append(ASOUL_CONF)
+                .append(" 2>/dev/null | head -c 1)\" ] || pidof AsoulOpt >/dev/null 2>&1; " +
+                    "then echo 1; else echo 0; fi\n")
             append("echo '##AS_PID'\n")
             append("pidof AsoulOpt 2>/dev/null\n")
             append("echo '##AS_CONF'\n")

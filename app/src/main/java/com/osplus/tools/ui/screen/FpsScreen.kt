@@ -55,6 +55,7 @@ import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.LiquidSlider
 import com.osplus.tools.ui.components.bottomBarContentPadding
@@ -96,14 +97,18 @@ private fun fmtElapsed(ms: Long): String {
 }
 
 /**
- * 帧率（一级页）：记录开关、悬浮窗、多档分析窗口与逐项趋势。
+ * 帧率会话页签（「记录」一级页的子页签）：记录开关、悬浮窗、多档分析窗口与逐项趋势。
+ *
+ * 2.9.0 由原 `FpsScreen` 改名而来——它不再是一级页，而是 [RecordsScreen] 的
+ * 第一个子页签，因此**不自带标题**（顶栏由根布局统一渲染），
+ * 页内也不再有「返回」等一级页语义。
  *
  * 录制期间刻意不绘制图表，避免绘图开销污染正在测量的帧率数据。
  *
  * @param onOpenAnalysis 点会话列表的「分析」时调用，跳转到独立的分析整页
  */
 @Composable
-fun FpsScreen(vm: DeviceViewModel, onOpenAnalysis: () -> Unit = {}) {
+fun FpsRecordTab(vm: DeviceViewModel, onOpenAnalysis: () -> Unit = {}) {
     // 面板刷新率上限，作为帧率纵轴的常驻参照（见 Charts.frameRateMax）。
     // 变量名带 Hz 后缀以免遮蔽同名 composable。
     val panelHz = panelRefreshHz()
@@ -236,13 +241,24 @@ fun FpsScreen(vm: DeviceViewModel, onOpenAnalysis: () -> Unit = {}) {
                         color = c.textTertiary,
                     )
                     Spacer(Modifier.height(10.dp))
-                    // 与底栏同语言的动作条：整条玻璃横条与页面背景明显区分
-                    LiquidNavTabs(
-                        items = listOf("导出 CSV", "清空记录"),
-                        selectedIndex = -1,
-                        onSelect = { if (records.isNotEmpty()) { if (it == 0) vm.exportFpsCsv() else vm.clearFpsRecords() } },
-                        enabled = records.isNotEmpty(),
-                    )
+                    // 动作行：两个独立按钮，不再是「借页签组件当按钮」。
+                    // 「清空记录」不可逆（丢掉整段会话），用 filled 提升辨识度，
+                    // 避免它和旁边可逆的「导出」看起来等重。
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ActionButton(
+                            text = "导出 CSV",
+                            onClick = { vm.exportFpsCsv() },
+                            enabled = records.isNotEmpty(),
+                            modifier = Modifier.weight(1f),
+                        )
+                        ActionButton(
+                            text = "清空记录",
+                            onClick = { vm.clearFpsRecords() },
+                            enabled = records.isNotEmpty(),
+                            filled = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     exportPath?.let {
                         Spacer(Modifier.height(8.dp))
                         NoticeBanner(text = "已导出到 $it", accent = ChartColors.gpu)
@@ -573,10 +589,10 @@ fun FpsScreen(vm: DeviceViewModel, onOpenAnalysis: () -> Unit = {}) {
                         )
                         Spacer(Modifier.height(6.dp))
                         if (viewingId > 0L) {
-                            LiquidNavTabs(
-                                items = listOf("返回实时视图"),
-                                selectedIndex = -1,
-                                onSelect = { vm.closeFpsSession() },
+                            ActionButton(
+                                text = "返回实时视图",
+                                onClick = { vm.closeFpsSession() },
+                                modifier = Modifier.fillMaxWidth(),
                             )
                             Spacer(Modifier.height(8.dp))
                         }

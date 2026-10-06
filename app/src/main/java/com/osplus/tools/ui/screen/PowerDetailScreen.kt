@@ -46,6 +46,7 @@ import com.osplus.tools.core.PowerRecorder
 import com.osplus.tools.model.AppDrainEntry
 import com.osplus.tools.model.PowerSource
 import com.osplus.tools.model.formatSpan
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.theme.OsText
@@ -71,11 +72,32 @@ import top.yukonga.miuix.kmp.basic.Text
 import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+/**
+ * 电池会话页签（「记录」一级页的子页签）：耗电统计 / 充电统计。
+ *
+ * 2.9.0 重构前的结构是「PowerScreen 一级页（电池态势卡 + 页签）→ PowerDetailScreen」，
+ * 中间多套了一层。重构后电池态势（电量环、剩余时长）迁到**总览页**——
+ * 它回答的是「现在还有多少电」，属于实时状态而非历史记录；
+ * 这一层因此被抽掉，本函数直接成为 [RecordsScreen] 的第二个子页签。
+ *
+ * 页签索引仍存在 ViewModel（`powerTab`）：根布局要据它决定是否在顶栏显示
+ * 「复制 / 删除本次记录」两个动作，页内状态顶栏读不到。
+ */
 @Composable
-fun PowerDetailScreen(vm: DeviceViewModel) {
-    // 页签状态放在 ViewModel：顶栏由根布局渲染，要根据它决定是否显示
-    // 「复制 / 删除本次记录」两个动作，页内状态顶栏读不到
-    val tab by vm.powerTab.collectAsStateWithLifecycle()
+fun PowerRecordTab(vm: DeviceViewModel) {
+    // 用**本地状态**驱动内容切换，不用 vm.powerTab 直接决定 when 分支。
+    //
+    // 原因：`LiquidNavTabs` 的选中态走的是原版 `LiquidBottomTabs` 的索引通道，
+    // 而原版只在**内部索引发生变化**时才回调（见 Common.kt 里对动作组那段说明）。
+    // 当 ViewModel 里的值与原版内部初值相同时，点击不会产生「变化」→ 回调不触发 →
+    // 内容不切换。表现就是用户看到的「页签点了没反应 / 内容与高亮对不上」。
+    //
+    // 本地状态让「高亮」与「内容」共用同一个真值来源，从根上消除错位；
+    // 同时仍把值写回 ViewModel，供顶栏动作（复制/删除本次记录）判断上下文。
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    val vmTab by vm.powerTab.collectAsStateWithLifecycle()
+    if (vmTab != tab) vm.setPowerTab(tab)
+
     // 「充电控制」页签已于 2.6.5 移除：真机实测该功能不可用（写 charging_enabled /
     // input_suspend 等节点在当前内核上不存在或被厂商充电策略接管，回读校验必然失败），
     // 保留一个永远失败的页面没有意义。
@@ -85,11 +107,14 @@ fun PowerDetailScreen(vm: DeviceViewModel) {
         LiquidNavTabs(
             items = tabs,
             selectedIndex = tab.coerceIn(0, tabs.lastIndex),
-            onSelect = { vm.setPowerTab(it) },
+            onSelect = {
+                tab = it
+                vm.setPowerTab(it)
+            },
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
         )
         when (tab) {
-            0 -> PowerRecordTab(vm)
+            0 -> DrainStatsTab(vm)
             else -> ChargeStatsTab(vm)
         }
     }
@@ -104,9 +129,12 @@ fun PowerDetailScreen(vm: DeviceViewModel) {
  * 版面按「先看结论、再看过程、最后看归因」组织：
  * 顶部录制控制回答「开始/停止」，其下使用过程回答「电量怎么掉的」，
  * 功耗续航卡回答「所以还能用多久」，使用场景卡回答「是谁在耗」。
+ *
+ * 名字由 `PowerRecordTab` 改为 `DrainStatsTab`（2.9.0）：外层函数占用了
+ * `PowerRecordTab` 这个名字（它才是「电池会话」页签本身）。
  */
 @Composable
-private fun PowerRecordTab(vm: DeviceViewModel) {
+private fun DrainStatsTab(vm: DeviceViewModel) {
     val samples by vm.powerSamples.collectAsStateWithLifecycle()
     val summary by vm.powerSummary.collectAsStateWithLifecycle()
     val recording by vm.powerRecording.collectAsStateWithLifecycle()
@@ -157,18 +185,21 @@ private fun PowerRecordTab(vm: DeviceViewModel) {
                         },
                     )
                     Spacer(Modifier.height(10.dp))
-                    LiquidNavTabs(
-                        items = listOf("复制数据", "删除本次记录"),
-                        selectedIndex = -1,
-                        onSelect = {
-                            if (it == 0) {
-                                vm.copyPowerRecord()
-                            } else {
-                                vm.clearPowerRecord()
-                            }
-                        },
-                        enabled = samples.isNotEmpty(),
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ActionButton(
+                            text = "复制数据",
+                            onClick = { vm.copyPowerRecord() },
+                            enabled = samples.isNotEmpty(),
+                            modifier = Modifier.weight(1f),
+                        )
+                        ActionButton(
+                            text = "删除本次记录",
+                            onClick = { vm.clearPowerRecord() },
+                            enabled = samples.isNotEmpty(),
+                            filled = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     if (copied) {
                         Spacer(Modifier.height(8.dp))
                         NoticeBanner(text = "已复制到剪贴板", accent = ChartColors.gpu)

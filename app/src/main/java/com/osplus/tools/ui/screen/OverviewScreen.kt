@@ -21,32 +21,35 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.model.BatteryInfo
 import com.osplus.tools.model.MetricSample
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.HealthBanner
 import com.osplus.tools.ui.components.HealthLevel
 import com.osplus.tools.ui.components.LineChart
+import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.OsMetricRing
-import com.osplus.tools.ui.components.LiquidNavTabs
-import com.osplus.tools.ui.components.UsageBar
+import com.osplus.tools.ui.components.RingChart
 import com.osplus.tools.ui.components.SectionCard
 import com.osplus.tools.ui.components.SpecGrid
+import com.osplus.tools.ui.components.UsageBar
 import com.osplus.tools.ui.components.axisSpanLabel
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
 import kotlinx.coroutines.delay
-import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /**
- * 概览页可下钻的详情页。
+ * 总览页可下钻的详情页。
  *
  * [title] 供根布局的统一顶栏显示——标题文案集中在枚举里，
  * 避免顶栏在根布局、页面在屏幕文件里各写一份而漂移。
  *
- * 电源已提升为一级页，不再是概览的下钻目标；概览页的电池卡直接切到「电源」标签。
+ * 2.9.0 重构后，这些详情页从**总览与监测两页**都可下钻：
+ * 总览的指标卡点进去只是「看更多」，监测的下钻同理。两边共用一套路由。
  */
 enum class OverviewDetail(val title: String) {
     Memory("内存"),
@@ -66,23 +69,20 @@ enum class OverviewDetail(val title: String) {
 private val MetricCellContentHeight = 96.dp
 
 /**
- * 概览（一级页）。
+ * 总览（一级页）：回答「设备现在怎么样」。
  *
- * 版式按「结论 → 水位 → 明细」排列：
- * 1. **健康结论条** —— 先回答「有没有问题」，下面的卡片负责「是多少」，这一条负责「算不算正常」；
- * 2. **三张通栏圆环卡** —— CPU / GPU / 内存，名称、百分比、说明行三行全部收在环心；
- *    再一张**帧率折线卡** —— 帧率要回答的是「稳不稳」，折线才看得出抖动；
- * 3. **设备概况** —— 低频静态信息压到最后。
+ * 版式按提案的三段式重排（2.9.0 信息架构重构）：
  *
- * 圆环取 140dp：环内文字受内切矩形约束（说明行的矩形底边也必须落在圆内）。
- * 按等线真实 ascent/descent 排版，说明行拆两行后四行总高 60.8dp，
- * 末行底边距环心 30.4dp，环内径 60dp 时说明行限宽 103.5dp，
- * 最长行（内存「10.71 GB / 14.75 GB」）85.8dp，余量 17.7dp。
- * 说明行只放纯数值、不带「当前 / 可用」前缀——前缀不承载信息却显著加宽文案；
- * 核心数、簇数等次要信息在「设备概况」里。
+ * 1. **设备状态** —— 健康结论（权限、温度、内存、电量）+ 异常快捷入口。
+ *    先回答「有没有问题」，下面的卡片负责「是多少」。
+ * 2. **关键指标卡** —— CPU / GPU / 内存 / 帧率 2×2。
+ *    **点击进入对应监测详情，而不是直接跳到调参** —— 这是提案明确要求的一条：
+ *    摘要卡的职责是「摘要」，从摘要直接跳进一个会写内核节点的页面，
+ *    等于把一次只读的探查变成了潜在的高危操作。
+ * 3. **设备与电池概况 + 快捷动作** —— 静态规格压到最后，动作收成一行。
  *
- * 动作（清理内存 / 清理交换 / 记录帧率 / 设置）在统一顶栏，
- * 因此页面本身只剩「读」的内容。
+ * 总览页**不放任何会改变设备行为的控件**（清理内存是唯一的例外，
+ * 它已在顶栏且需要 root）。所有调优入口统一在「调优」一级页。
  *
  * 顶部留白只有 4dp：页面标题由根布局的 [com.osplus.tools.ui.components.OsTopBar]
  * 统一承担，本页不再自绘标题，也不需要在顶部为它预留空间。
@@ -91,8 +91,14 @@ private val MetricCellContentHeight = 96.dp
 fun OverviewScreen(
     vm: DeviceViewModel,
     onOpen: (OverviewDetail) -> Unit,
-    onOpenPower: () -> Unit,
-    onOpenFps: () -> Unit,
+    /** 点指标卡 → 切到监测页（提案：摘要卡点击进入监测详情） */
+    onOpenMonitor: () -> Unit,
+    /** 电池卡 → 切到记录页（电池会话） */
+    onOpenRecords: () -> Unit,
+    /** 快捷动作：开始帧率记录 */
+    onStartFps: () -> Unit,
+    /** 快捷动作：打开悬浮窗管理器 */
+    onOpenOverlayManager: () -> Unit,
 ) {
     val history by vm.history.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
@@ -102,6 +108,7 @@ fun OverviewScreen(
     val mem by vm.mem.collectAsStateWithLifecycle()
     val battery by vm.battery.collectAsStateWithLifecycle()
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
+    val fpsRecording by vm.fpsRecording.collectAsStateWithLifecycle()
     val memClean by vm.memCleanState.collectAsStateWithLifecycle()
     val c = osColors()
 
@@ -149,6 +156,7 @@ fun OverviewScreen(
         contentPadding = bottomBarContentPadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        // ---------------- 一、设备状态 ----------------
         item {
             HealthBanner(
                 level = health.level,
@@ -157,18 +165,29 @@ fun OverviewScreen(
             )
         }
 
-        // 指标区 2×2：CPU / GPU / 内存 / 帧率 各占一格。
-        //
-        // 尺寸统一靠 `contentHeight = RingSize`（96dp）：环卡的内容天然就是 96dp 的环，
-        // 而帧率卡是「表头 + 折线 + 时间轴」，实测只有 79.5dp，比环卡矮 16.5dp，
-        // 于是 2×2 的第二行横线会明显比第一行矮、左右也不齐。
-        // 给四格同一个内容最小高度后，环卡高度不变（本来就有 96dp），
-        // 帧率卡被撑到同一高度，四张卡自然等高。
-        //
-        // 两列意味着单卡只有 160dp 宽（360 − 左右 14×2 − 列间距 12，对半），
-        // 环也随之从通栏版的 140dp 收到 96dp——环心内径只剩 40dp，
-        // 因此说明行必须极短（「2400 MHz」44.0dp 是上限附近），
-        // GPU 型号这种长文案放不进环心，只留频率。
+        // 异常快捷入口：只有真的处于警示态才出现。
+        // 日常「系统正常」时不给入口 —— 一个永远在那儿但它指向的页面里
+        // 什么异常都没有的按钮，只会教用户忽略它。
+        if (health.level != HealthLevel.Ok) {
+            item {
+                QuickActions(
+                    rootAvailable = rootAvailable,
+                    fpsRecording = fpsRecording,
+                    // 权限缺失时，快捷入口指向提权管理而不是调优页 ——
+                    // 用户此刻真正需要做的是「把权限开了」，不是去看一堆置灰的控件
+                    onGrantRoot = { vm.reprobePrivilege() },
+                    onStartFps = onStartFps,
+                    onStopFps = { vm.stopFpsRecording() },
+                    onOpenOverlayManager = onOpenOverlayManager,
+                )
+            }
+        }
+
+        // ---------------- 二、关键指标卡（2×2）----------------
+        item { CardSectionLabel("关键指标") }
+
+        // 四格等高的处理与重构前一致：给同一内容最小高度，
+        // 帧率卡被撑到 96dp 后与三个环卡天然对齐。
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -176,7 +195,8 @@ fun OverviewScreen(
             ) {
                 SectionCard(
                     modifier = Modifier.weight(1f),
-                    onClick = { onOpen(OverviewDetail.Cpu) },
+                    // 提案要求：指标卡点击进入**监测详情**，不是调参页
+                    onClick = onOpenMonitor,
                     contentHeight = MetricCellContentHeight,
                 ) {
                     OsMetricRing(
@@ -193,7 +213,7 @@ fun OverviewScreen(
                 }
                 SectionCard(
                     modifier = Modifier.weight(1f),
-                    onClick = { onOpen(OverviewDetail.Gpu) },
+                    onClick = onOpenMonitor,
                     contentHeight = MetricCellContentHeight,
                 ) {
                     OsMetricRing(
@@ -220,7 +240,7 @@ fun OverviewScreen(
             ) {
                 SectionCard(
                     modifier = Modifier.weight(1f),
-                    onClick = { onOpen(OverviewDetail.Memory) },
+                    onClick = onOpenMonitor,
                     contentHeight = MetricCellContentHeight,
                 ) {
                     OsMetricRing(
@@ -237,7 +257,7 @@ fun OverviewScreen(
                 }
                 SectionCard(
                     modifier = Modifier.weight(1f),
-                    onClick = onOpenFps,
+                    onClick = onOpenMonitor,
                     contentHeight = MetricCellContentHeight,
                 ) {
                     FpsTrendCard(values = trend.map { it.fps }, axisStartLabel = fpsAxisStart)
@@ -245,6 +265,7 @@ fun OverviewScreen(
             }
         }
 
+        // 清理结果回执
         memClean?.let { r ->
             item {
                 NoticeBanner(
@@ -259,6 +280,50 @@ fun OverviewScreen(
             }
         }
 
+        // ---------------- 三、电池摘要 ----------------
+        // 提案要求电池的**实时状态**留在总览（历史记录去「记录」页）。
+        // 这一张卡只给「还能用多久」，耗电明细与录制在记录页。
+        item {
+            SectionCard(onClick = onOpenRecords) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RingChart(
+                        progress = if (battery.levelPercent >= 0) battery.levelPercent / 100f else 0f,
+                        color = if (charging) ChartColors.gpu else ChartColors.power,
+                        label = "电池",
+                        value = if (battery.levelPercent >= 0) "${battery.levelPercent}" else "-",
+                        unit = "%",
+                        size = 76.dp,
+                        stroke = 11.dp,
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = batteryRemainingText(battery, charging),
+                            style = OsText.valueStrong,
+                            color = c.textPrimary,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = listOf(
+                                if (battery.voltageMv > 0) "%.2f V".format(battery.voltageMv / 1000f) else null,
+                                batteryTempC?.let { "%.1f ℃".format(it) },
+                                "%.0f mA".format(battery.currentNowUa / 1000f),
+                            ).filterNotNull().joinToString(" · "),
+                            style = OsText.caption,
+                            color = c.textSecondary,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            text = "查看耗电记录 ›",
+                            style = OsText.micro,
+                            color = c.primary,
+                        )
+                    }
+                }
+            }
+        }
+
+        // ---------------- 四、设备概况 ----------------
         item {
             SectionCard {
                 Text(
@@ -314,7 +379,7 @@ fun OverviewScreen(
             }
         }
 
-        // ---------------- 系统负载 ----------------
+        // ---------------- 五、系统负载 ----------------
         // 这些指标（负载 / 网络 / IO 压力 / 磁盘）此前已在 SystemExtrasDataSource
         // 里实现但没有界面消费，属于「有能力没出口」。
         //
@@ -323,6 +388,54 @@ fun OverviewScreen(
         // 它是「本次想看」的临时意图，不是长期偏好。
         item {
             SystemExtrasCard(vm)
+        }
+    }
+}
+
+/**
+ * 快捷动作条。
+ *
+ * 只在异常状态下出现（见调用点注释），三项都指向「用户此刻最可能要做的动作」：
+ * 补权限 / 开记录 / 开浮窗。
+ */
+@Composable
+private fun QuickActions(
+    rootAvailable: Boolean,
+    fpsRecording: Boolean,
+    onGrantRoot: () -> Unit,
+    onStartFps: () -> Unit,
+    onStopFps: () -> Unit,
+    onOpenOverlayManager: () -> Unit,
+) {
+    SectionCard {
+        Column(Modifier.padding(vertical = 2.dp)) {
+            Text(
+                text = "快捷动作",
+                style = OsText.value,
+                color = osColors().textPrimary,
+            )
+            Spacer(Modifier.height(10.dp))
+            if (!rootAvailable) {
+                ActionButton(
+                    text = "授权 Root 提权",
+                    onClick = onGrantRoot,
+                    filled = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ActionButton(
+                    text = if (fpsRecording) "停止帧率记录" else "开始帧率记录",
+                    onClick = { if (fpsRecording) onStopFps() else onStartFps() },
+                    modifier = Modifier.weight(1f),
+                )
+                ActionButton(
+                    text = "悬浮监视器",
+                    onClick = onOpenOverlayManager,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }
@@ -366,16 +479,23 @@ private fun SystemExtrasCard(vm: DeviceViewModel) {
         Spacer(Modifier.height(4.dp))
         Text(
             text = "读取 /proc/loadavg、/proc/net/dev、/proc/pressure/io、/proc/diskstats。" +
-                "这些节点应用身份读不到，需要提权通道；开启后每秒多一条命令。",
+                "这些节点应用身份读不到，需要提权通道；开启后每秒多一条命令。" +
+                if (!caps.available) "（当前提权通道不可用，开启后指标会显示 --）" else "",
             style = OsText.micro,
             color = c.textTertiary,
         )
         Spacer(Modifier.height(10.dp))
-        LiquidNavTabs(
-            items = listOf(if (enabled) "关闭采集" else "开启采集"),
-            selectedIndex = -1,
-            enabled = caps.available || enabled,
-            onSelect = { vm.setExtrasEnabled(!enabled) },
+        // 不再用 `enabled = caps.available || enabled` 置灰。
+        //
+        // 之前的写法让「开启采集」在没 root 时是个灰按钮且点不动，用户报「按钮无效」——
+        // 而真正的问题是：他此刻想做的事（开采集）本身**不需要权限就能开**，
+        // 是**数据**需要权限。置灰等于把两件事混成一件，用户既开不了也不知道为什么。
+        // 现在始终可点：点开 → 数据读不到 → 下方已有 NoticeBanner 说明原因并指向提权管理。
+        ActionButton(
+            text = if (enabled) "关闭采集" else "开启采集",
+            onClick = { vm.setExtrasEnabled(!enabled) },
+            filled = !enabled,
+            modifier = Modifier.fillMaxWidth(),
         )
 
         if (enabled) {
@@ -469,7 +589,7 @@ private fun fmtRate(bps: Long): String {
 }
 
 /**
- * 概览页的帧率折线卡（2×2 网格的第四格）。
+ * 总览页的帧率折线卡（2×2 网格的第四格）。
  *
  * 三个圆环回答「现在的百分比是多少」，帧率要回答的是「稳不稳」——
  * 掉帧是短时抖动，一个瞬时百分比会把「稳定 60 帧」与「在 60/30 之间来回跳」

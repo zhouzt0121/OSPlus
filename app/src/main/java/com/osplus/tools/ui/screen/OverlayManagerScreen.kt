@@ -31,8 +31,8 @@ import com.osplus.tools.core.MonitorKind
 import com.osplus.tools.core.MonitorState
 import com.osplus.tools.core.Preferences
 import com.osplus.tools.service.MonitorOverlayService
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.CardSectionLabel
-import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.LiquidSlider
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
@@ -42,8 +42,13 @@ import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import top.yukonga.miuix.kmp.basic.Text
 
-/** 跳转本应用的「悬浮窗权限」系统授权页 */
-private fun openOverlaySettings(context: Context) {
+/**
+ * 跳转本应用的「悬浮窗权限」系统授权页。
+ *
+ * 用 internal 而非 private：监测页的悬浮监视器网格也需要它
+ * （点未授权的监视器时直接把用户送去授权，而不是静默失败）。
+ */
+internal fun openOverlaySettings(context: Context) {
     runCatching {
         context.startActivity(
             Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
@@ -119,10 +124,11 @@ fun OverlayManagerScreen() {
                                 "点下方按钮前往系统授权页开启。",
                         )
                         Spacer(Modifier.height(10.dp))
-                        LiquidNavTabs(
-                            items = listOf("前往授权"),
-                            selectedIndex = -1,
-                            onSelect = { openOverlaySettings(context) },
+                        ActionButton(
+                            text = "前往授权",
+                            onClick = { openOverlaySettings(context) },
+                            filled = true,
+                            modifier = Modifier.fillMaxWidth(),
                         )
                         Spacer(Modifier.height(10.dp))
                     }
@@ -138,20 +144,22 @@ fun OverlayManagerScreen() {
                         Text(status, style = OsText.value, color = c.textSecondary)
                     }
                     Spacer(Modifier.height(10.dp))
-                    LiquidNavTabs(
-                        items = listOf("全部开启", "全部关闭"),
-                        selectedIndex = -1,
-                        // 全开时仍可点：重复点是无害的幂等操作，
-                        // 置灰反而让人以为按钮坏了
-                        onSelect = { idx ->
-                            if (idx == 0) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ActionButton(
+                            text = "全部开启",
+                            onClick = {
                                 MonitorState.setAll(context, MonitorKind.entries.toSet())
                                 if (Settings.canDrawOverlays(context)) MonitorOverlayService.start(context)
-                            } else {
-                                MonitorOverlayService.stopAll(context)
-                            }
-                        },
-                    )
+                            },
+                            filled = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        ActionButton(
+                            text = "全部关闭",
+                            onClick = { MonitorOverlayService.stopAll(context) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             }
         }
@@ -215,19 +223,34 @@ fun OverlayManagerScreen() {
                 Column(Modifier.padding(vertical = 5.dp)) {
                     CardSectionLabel("位置")
                     Spacer(Modifier.height(8.dp))
-                    LiquidNavTabs(
-                        items = listOf("重置全部位置"),
-                        selectedIndex = -1,
-                        onSelect = {
+                    ActionButton(
+                        text = "重置全部位置",
+                        onClick = {
                             MonitorKind.entries.forEach { kind ->
                                 Preferences.clearMonitorPosition(context, kind)
                             }
-                            // 位置在窗口创建时读取，想让重置立刻生效必须重建窗口：
-                            // 用「全部关掉再全部开」触发服务的增量同步逻辑。
+                            // 位置在窗口创建时读取，想让重置立刻生效必须重建窗口。
+                            //
+                            // 关键点：**先真的全关、再恢复**。原先写法是
+                            // `setAll(emptySet())` 紧接着 `setAll(was)`，
+                            // 两次都在同一个快照帧内完成，服务端读 `_enabled` 时
+                            // 已经是最终值 → 看不到「有窗口被关掉」→ 一个窗口都不销毁，
+                            // 位置自然不刷新。这正是「重置全部位置」点了没反应的根因。
+                            //
+                            // 这里用 `stopAll` 真正把服务停掉（窗口全部销毁），
+                            // 再按原集合重新启动，确保走完整的「销毁 → 重建」路径。
                             val was = MonitorState.enabled.value
-                            MonitorState.setAll(context, emptySet())
-                            MonitorState.setAll(context, was)
+                            // stopAll 内部会把 enabled 清成空集（见 MonitorOverlayService.stopAll），
+                            // 所以顺序必须是：先记下原集合 → 全停（触发窗口销毁）→ 恢复集合 → 再启动。
+                            MonitorOverlayService.stopAll(context)
+                            if (was.isNotEmpty()) {
+                                MonitorState.setAll(context, was)
+                                if (Settings.canDrawOverlays(context)) {
+                                    MonitorOverlayService.start(context)
+                                }
+                            }
                         },
+                        modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(6.dp))
                     Text(

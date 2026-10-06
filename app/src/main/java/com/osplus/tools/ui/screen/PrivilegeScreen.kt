@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -15,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.PrivilegeMode
 import com.osplus.tools.core.Shell
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.InfoRow
 import com.osplus.tools.ui.components.LiquidNavTabs
@@ -78,12 +80,11 @@ fun PrivilegeScreen(viewModel: DeviceViewModel) {
                         color = c.textTertiary,
                     )
                     Spacer(Modifier.height(10.dp))
-                    LiquidNavTabs(
-                        items = listOf("请求 Root 授权"),
-                        selectedIndex = -1,
-                        onSelect = {
-                            viewModel.selectPrivilegeMode(PrivilegeMode.ROOT)
-                        },
+                    ActionButton(
+                        text = "请求 Root 授权",
+                        onClick = { viewModel.selectPrivilegeMode(PrivilegeMode.ROOT) },
+                        filled = true,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(10.dp))
                     InfoRow("Root", value = if (rootAvailable) "已授权" else "未授权", emphasis = true)
@@ -120,10 +121,10 @@ fun PrivilegeScreen(viewModel: DeviceViewModel) {
                         color = c.textTertiary,
                     )
                     Spacer(Modifier.height(10.dp))
-                    LiquidNavTabs(
-                        items = listOf("重新探测提权通道"),
-                        selectedIndex = -1,
-                        onSelect = { viewModel.reprobePrivilege() },
+                    ActionButton(
+                        text = "重新探测提权通道",
+                        onClick = { viewModel.reprobePrivilege() },
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
             }
@@ -139,10 +140,10 @@ fun PrivilegeScreen(viewModel: DeviceViewModel) {
                             color = c.textPrimary,
                         )
                         Spacer(Modifier.height(8.dp))
-                        LiquidNavTabs(
-                            items = listOf("知道了"),
-                            selectedIndex = -1,
-                            onSelect = { viewModel.clearPrivilegeMessage() },
+                        ActionButton(
+                            text = "知道了",
+                            onClick = { viewModel.clearPrivilegeMessage() },
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }

@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.osplus.tools.core.CpuDataSource
 import com.osplus.tools.core.GpuDataSource
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.CardSectionLabel
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.ChoiceChip
@@ -631,18 +632,20 @@ fun MemDetailScreen(vm: DeviceViewModel) {
                         enabled = zramEditable,
                     )
                     Spacer(Modifier.height(8.dp))
-                    LiquidNavTabs(
-                        items = listOf("应用并重建", "取当前值"),
-                        selectedIndex = -1,
-                        onSelect = {
-                            if (it == 0) {
-                                if (zramEditable) vm.resizeZram((sizeGb * 1024f * 1024f).toLong())
-                            } else {
-                                sizeGb = (mem.zramTotalKb / 1024f / 1024f).coerceIn(0f, 8f)
-                            }
-                        },
-                        enabled = zramEditable,
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ActionButton(
+                            text = "应用并重建",
+                            onClick = { if (zramEditable) vm.resizeZram((sizeGb * 1024f * 1024f).toLong()) },
+                            enabled = zramEditable,
+                            filled = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        ActionButton(
+                            text = "取当前值",
+                            onClick = { sizeGb = (mem.zramTotalKb / 1024f / 1024f).coerceIn(0f, 8f) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         text = if (!zramResizeEnabled) {

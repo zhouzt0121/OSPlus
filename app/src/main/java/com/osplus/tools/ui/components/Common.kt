@@ -500,6 +500,23 @@ fun HealthBanner(
  * 旧的自绘版用 `lastPressed` 解决了这件事：动作组时胶囊跟随最近一次按下的项。
  * 这里在适配层补回同一语义——[lastPressed] 只在动作组路径上被写入，选择组仍由
  * 外部的 `selectedIndex` 决定。
+ *
+ * ### 动作组**不能**走 `onTabSelected`（这是「按钮点了没反应」的根因）
+ *
+ * 原版 `LiquidBottomTabs` 内部只在 `currentIndex` **发生变化**时才回调
+ * （`snapshotFlow { currentIndex }.drop(1).collectLatest { onTabSelected(it) }`，
+ * 见 liquid/LiquidBottomTabs.kt 第 141~148 行）。而动作组的 `safeIndex` 恒为 0，
+ * 于是：
+ *
+ * - 点第 2、3 项：`currentIndex` 本来就是 0、点完还是 0 → **永不回调**；
+ * - 连点同一项：第一次之后 `currentIndex` 没变过 → **第二次起不回调**。
+ *
+ * 表现就是「导出 CSV 能点、清空记录点了没反应」「全部恢复默认点一次有效、再点无效」。
+ * 因此**动作组改为直接由 `LiquidBottomTab` 自己的 `onClick` 回调**，
+ * 完全绕开索引机制；选择组仍走原版索引路径（它本来就依赖索引变化）。
+ *
+ * 2.9.0 起绝大部分动作组已改用 [ActionButton]（真按钮语义、有按下反馈），
+ * 这里保留修正是因为仍有历史调用点，且留着错的行为会成为后续踩坑的样板。
  */
 @Composable
 fun LiquidNavTabs(
@@ -537,6 +554,24 @@ fun LiquidNavTabs(
             }
         }
     }
+    // 点击直达路径：**两组都用它**，不经过原版的「索引变化」闸门。
+    //
+    // 原版 `onTabSelected` 只在内部 `currentIndex` 变化时触发（见文件顶部说明）。
+    // 两处踩坑都源于此：
+    // - 动作组 safeIndex 恒为 0 → 第 2 项起、以及重复点同一项都静默失效；
+    // - 选择组当外部 `selectedIndex` 与原版内部初值相同、或点击后又被外部状态
+    //   同步回去时，也会出现「点了没反应」或「高亮与内容错位」。
+    //
+    // 改成每个 tab 自己 `onClick` 直接回调后，行为只由调用点状态决定，
+    // 与原版内部动画/索引实现完全解耦。原版仍负责胶囊动画与折射渲染。
+    val stableOnTap = remember {
+        { index: Int ->
+            if (enabledState.value) {
+                if (!hasSelectionState.value) lastPressed.intValue = index
+                selectState.value(index)
+            }
+        }
+    }
 
     LiquidBottomTabs(
         selectedTabIndex = stableSelected,
@@ -548,7 +583,7 @@ fun LiquidNavTabs(
             .alpha(if (enabled) 1f else 0.45f),
     ) {
         items.forEachIndexed { index, label ->
-            LiquidBottomTab(onClick = { stableOnSelect(index) }) {
+            LiquidBottomTab(onClick = { stableOnTap(index) }) {
                 // 选择组高亮外部选中项；动作组高亮最近按下的项（pillIndex = -1 时都不亮）
                 val highlighted = index == pillIndex
                 Text(
@@ -603,5 +638,52 @@ fun NumberInputField(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
+}
+
+/**
+ * 页面内动作按钮（原版 [LiquidButton] 的统一封装）。
+ *
+ * 为什么要有这一层：本轮把 12 处「本该是按钮」的动作从 [LiquidNavTabs] 换出来。
+ * 之前这些动作借用了页签组件（`items = listOf("导出 CSV", "清空记录")` + `selectedIndex = -1`），
+ * 视觉上像按钮但语义是「可选中项」——`selectedIndex` 传 -1 时组件内部仍按页签布局渲染，
+ * 等宽分配 + 无按下反馈，点了没反应时用户分不清「没生效」还是「没点中」。
+ *
+ * 用原版 [LiquidButton] 而不是自绘：项目约定「页面内按钮由调用点直接引用原版组件」
+ * （见 ui/components/LiquidGlass.kt 顶部说明），此处只是把 `backdrop = emptyBackdrop()`、
+ * `surfaceColor = LiquidGlassColors.container()`、文字样式这三项**每个调用点都会写一遍**
+ * 且必须写一致的部分固化下来。
+ *
+ * @param filled 强调态（主操作）。默认的玻璃底在浅色卡片上对比度偏弱，
+ *   适合「导出」「恢复默认」这类可逆动作；不可逆或用户主诉的动作（清空记录、请求 Root）
+ *   用 filled 提升辨识度。
+ */
+@Composable
+fun ActionButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    filled: Boolean = false,
+) {
+    val c = osColors()
+    LiquidButton(
+        onClick = onClick,
+        backdrop = emptyBackdrop(),
+        modifier = modifier.alpha(if (enabled) 1f else 0.45f),
+        isInteractive = enabled,
+        surfaceColor = if (filled) {
+            c.primary.copy(alpha = if (c.isDark) 0.26f else 0.13f)
+        } else {
+            LiquidGlassColors.container()
+        },
+    ) {
+        Text(
+            text = text,
+            style = OsText.label,
+            color = if (filled) c.primary else c.textPrimary,
+            fontWeight = if (filled) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+        )
     }
 }

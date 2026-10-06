@@ -2,10 +2,11 @@ package com.osplus.tools.ui.screen
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,18 +21,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.osplus.tools.core.PerfSchedDataSource
 import com.osplus.tools.model.MetricSample
+import com.osplus.tools.ui.components.ActionButton
 import com.osplus.tools.ui.components.ChartColors
 import com.osplus.tools.ui.components.CoreBarsChart
 import com.osplus.tools.ui.components.Hairline
@@ -39,7 +42,9 @@ import com.osplus.tools.ui.components.LiquidNavTabs
 import com.osplus.tools.ui.components.MetricChartCard
 import com.osplus.tools.ui.components.NoticeBanner
 import com.osplus.tools.ui.components.SectionCard
+import com.osplus.tools.ui.components.SwitchRow
 import com.osplus.tools.ui.components.axisSpanLabel
+import com.osplus.tools.ui.components.bottomBarContentPadding
 import com.osplus.tools.ui.components.downsample
 import com.osplus.tools.ui.components.frameRateMax
 import com.osplus.tools.ui.components.frameRateTicks
@@ -49,8 +54,9 @@ import com.osplus.tools.ui.components.spanText
 import com.osplus.tools.ui.theme.OsText
 import com.osplus.tools.ui.theme.osColors
 import com.osplus.tools.vm.DeviceViewModel
+import com.osplus.tools.core.MonitorKind
+import com.osplus.tools.core.MonitorState
 import kotlinx.coroutines.delay
-import com.osplus.tools.ui.components.bottomBarContentPadding
 import top.yukonga.miuix.kmp.basic.Text
 
 /** 趋势观察窗口的候选长度（秒），与采样间隔 1 秒一一对应 */
@@ -58,24 +64,25 @@ private val WindowLabels = listOf("1分", "5分", "15分", "30分")
 private val WindowSeconds = listOf(60, 300, 900, 1800)
 
 /**
- * 性能（一级页）：进程占用 + 累积趋势 + 每核状态 + 调优入口。
+ * 监测（一级页）：**只读**的实时观察。
  *
- * 由原「实时」页与原「CPU / GPU / 内存」详情页合并而来——它们回答的是同一个问题
- * 「现在谁在吃资源、能不能调」，拆成四个入口只会让用户在页面之间来回跳。
+ * 职责边界（2.9.0 信息架构重构时划定）：这一页回答「现在发生了什么」，
+ * 因此**不放任何会改变设备行为的控件**。所有调参入口已迁到「调优」页。
  *
- * 观察窗口改由分段控件选择：原来趋势窗口只能随运行时间被动增长，
- * 想看瞬时抖动只能等重启，想看长趋势又要等半小时。窗口一旦可选，
- * 同一张图既承担「秒级抖动」也承担「半小时走势」，不再需要第二个页面。
+ * 为什么必须分家：旧「性能」页把实时趋势与调速器入口混在一屏，
+ * 「看数据」和「改参数」是两种完全不同的意图——前者是安全的、频繁的，
+ * 后者是高风险的、低频的。混在一起时用户很容易在只想看看的时候
+ * 手指滑到一个会立刻写内核节点的控件上。
  *
- * 调优入口置于最上方：这一页真正需要用户「动手」的只有那四个入口
- * （CPU / GPU / 内存 / 性能调度），而它们此前压在长趋势卡之后，
- * 得先划过六张图才够得着。趋势是「看」的，入口是「做」的，做的排在看的上面。
- * 进程摘要与趋势紧随其后，负责回答「谁在吃资源、变化趋势如何」。
+ * 顺序按「从整体到细节」：悬浮监视器开关（全局工具）→ 观察窗口 →
+ * 总览级趋势 → 各核心 → 进程列表。
  */
 @Composable
-fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
-    // 面板刷新率上限，作为帧率纵轴的常驻参照（见 Charts.frameRateMax）。
-    // 变量名带 Hz 后缀以免遮蔽同名 composable。
+fun MonitorScreen(
+    vm: DeviceViewModel,
+    onOpen: (OverviewDetail) -> Unit,
+    onOpenOverlayManager: () -> Unit = {},
+) {
     val panelHz = panelRefreshHz()
     val history by vm.history.collectAsStateWithLifecycle()
     val cpu by vm.cpu.collectAsStateWithLifecycle()
@@ -85,7 +92,6 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
     val rootAvailable by vm.rootAvailable.collectAsStateWithLifecycle()
     val processes by vm.processes.collectAsStateWithLifecycle()
     val appIcons by vm.appIcons.collectAsStateWithLifecycle()
-    val uperf by vm.uperfState.collectAsStateWithLifecycle()
     val c = osColors()
 
     // 默认 5 分：短到能看出抖动，长到不至于只剩噪声
@@ -119,76 +125,20 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (!rootAvailable) {
-            item { NoticeBanner("未获取到 Root 权限，CPU 占用、GPU 与功耗等节点将不可读。") }
-        }
-
-        // ---------- 调优入口（置顶：低频高危操作下沉为二级页）----------
-        item {
-            SectionCard {
-                TuningRow(
-                    label = "CPU 频率与调速器",
-                    summary = cpu.governors.firstOrNull { it.isNotBlank() } ?: "-",
-                    onClick = { onOpen(OverviewDetail.Cpu) },
-                )
-                Hairline(verticalPadding = 2.dp)
-                TuningRow(
-                    label = "GPU 频率与调速器",
-                    summary = gpu.governor.ifBlank { "-" },
-                    onClick = { onOpen(OverviewDetail.Gpu) },
-                )
-                Hairline(verticalPadding = 2.dp)
-                TuningRow(
-                    label = "内存与 ZRAM",
-                    summary = if (mem.zramTotalKb > 0) fmtGb(mem.zramTotalKb) else "未启用",
-                    onClick = { onOpen(OverviewDetail.Memory) },
-                )
-                Hairline(verticalPadding = 2.dp)
-                TuningRow(
-                    label = "性能调度",
-                    summary = when {
-                        !uperf.installed -> "未安装 Uperf"
-                        uperf.mode.isBlank() -> "Uperf 已安装"
-                        else -> "Uperf · " + PerfSchedDataSource.uperfModeLabel(uperf.mode)
-                    },
-                    onClick = { onOpen(OverviewDetail.Sched) },
+            item {
+                NoticeBanner(
+                    "未获取到 Root 权限，CPU 占用、GPU 与功耗等节点将不可读。" +
+                        "部分指标会显示为「不可读」。",
                 )
             }
         }
 
-        // ---------- 进程摘要（点击进入进程管理）----------
+        // ---------- 悬浮监视器快捷开关 ----------
+        // 悬浮窗是跨页面工具，不是一组独立页面。把它放在监测页而不是塞进设置里：
+        // 「看数据」和「把数据贴到屏幕上看」是同一个意图的两种强度，
+        // 用户开着监测页时最可能顺手把浮窗点开。
         item {
-            SectionCard(onClick = { onOpen(OverviewDetail.Process) }) {
-                if (topProcesses.isEmpty()) {
-                    Text(
-                        text = if (rootAvailable) "正在读取进程…" else "需要 Root 权限才能读取进程",
-                        style = OsText.caption,
-                        color = c.textTertiary,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                } else {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "进程占用",
-                            style = OsText.value,
-                            color = c.textPrimary,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            text = "全部 ${processes.size} ›",
-                            style = OsText.caption,
-                            color = c.primary,
-                        )
-                    }
-                    Spacer(Modifier.height(9.dp))
-                    topProcesses.forEach { p ->
-                        ProcessSummaryRow(
-                            name = p.name,
-                            percent = p.cpuPercent,
-                            icon = p.packageName?.let { appIcons[it] },
-                        )
-                    }
-                }
-            }
+            OverlayQuickSwitch(onClick = onOpenOverlayManager)
         }
 
         // ---------- 观察窗口选择器（只作用于紧随其后的趋势卡）----------
@@ -219,6 +169,8 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                     maxValue = 100f,
                     color = ChartColors.cpu,
                     unit = "%",
+                    subtitle = cpu.clusters.maxOfOrNull { it.curKhz }
+                        ?.let { "最高簇 ${it / 1000} MHz" },
                     axisStartLabel = axisStart,
                 )
                 Hairline(verticalPadding = 12.dp)
@@ -267,7 +219,7 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                     ),
                     color = ChartColors.fps,
                     unit = "FPS",
-                    subtitle = "需在「帧率」页开启记录",
+                    subtitle = "需在「记录」页开启记录",
                     yTicks = { frameRateTicks(it) },
                     axisStartLabel = axisStart,
                 )
@@ -288,6 +240,11 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
             item {
                 SectionCard {
                     Column(Modifier.padding(vertical = 4.dp)) {
+                        CardSectionHeader(
+                            title = "各核心占用",
+                            action = "详情 ›",
+                            onAction = { onOpen(OverviewDetail.Cpu) },
+                        )
                         CoreBarsChart(
                             coreIndexes = coreIndexes,
                             loads = latest?.coreLoads ?: emptyList(),
@@ -297,17 +254,127 @@ fun PerfScreen(vm: DeviceViewModel, onOpen: (OverviewDetail) -> Unit) {
                 }
             }
         }
+
+        // ---------- 进程占用 ----------
+        item {
+            SectionCard(onClick = { onOpen(OverviewDetail.Process) }) {
+                if (topProcesses.isEmpty()) {
+                    Text(
+                        text = if (rootAvailable) "正在读取进程…" else "需要 Root 权限才能读取进程",
+                        style = OsText.caption,
+                        color = c.textTertiary,
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                } else {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "进程占用",
+                            style = OsText.value,
+                            color = c.textPrimary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "全部 ${processes.size} ›",
+                            style = OsText.caption,
+                            color = c.primary,
+                        )
+                    }
+                    Spacer(Modifier.height(9.dp))
+                    topProcesses.forEach { p ->
+                        ProcessSummaryRow(
+                            name = p.name,
+                            percent = p.cpuPercent,
+                            icon = p.packageName?.let { appIcons[it] },
+                        )
+                    }
+                }
+            }
+        }
+
+        // ---------- 下钻详情入口 ----------
+        item {
+            SectionCard {
+                Column(Modifier.padding(vertical = 2.dp)) {
+                    DetailRow("GPU 详情", gpu.name.ifBlank { "-" }) { onOpen(OverviewDetail.Gpu) }
+                    Hairline(verticalPadding = 2.dp)
+                    DetailRow("内存详情", fmtGb(mem.totalKb)) { onOpen(OverviewDetail.Memory) }
+                    Hairline(verticalPadding = 2.dp)
+                    DetailRow("系统负载", "负载 / 网络 / 磁盘 / IO 压力") {
+                        onOpen(OverviewDetail.Cpu)
+                    }
+                }
+            }
+        }
     }
 }
 
 /**
- * 调优入口行：左标题、右当前状态摘要。
+ * 悬浮监视器入口卡。
  *
- * 一级页只负责「告知当前是什么」和「能点进去」，
- * 具体有哪些可选值、写哪个节点，留给二级页——这样一级页不会因机型差异而长度不一。
+ * 这里**只做一件事：跳转到悬浮窗管理器**。
+ *
+ * 为什么把开关撤掉：本页是「只读观察」页，而开关悬浮窗是「改变设备状态」。
+ * 更重要的是，六个监视器各自的开关、外观、位置全在悬浮窗管理器里，
+ * 在这里再摆一份 6 格迷你开关等于把同一个真值暴露在两个地方——
+ * 用户在监测页点开一个、又去管理器里关掉，两边状态容易对不上。
+ * 现在整张卡就是一个按钮，点一下去唯一的那处配置页。
  */
 @Composable
-private fun TuningRow(
+private fun OverlayQuickSwitch(onClick: () -> Unit) {
+    val c = osColors()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val enabled by MonitorState.enabled.collectAsStateWithLifecycle()
+    val overlayGranted = remember {
+        android.provider.Settings.canDrawOverlays(context)
+    }
+
+    val status = buildString {
+        append(if (enabled.isEmpty()) "未开启" else "已开启 ${enabled.size} / ${MonitorKind.entries.size} 个窗口")
+        append(" · ")
+        append(if (overlayGranted) "权限正常" else "缺少悬浮窗权限")
+    }
+
+    ActionButton(
+        text = "悬浮监视器 · $status  ›",
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/** 卡片内的小节标题行：左侧标题 + 右侧动作 */
+@Composable
+private fun CardSectionHeader(
+    title: String,
+    action: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    val c = osColors()
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = title,
+            style = OsText.value,
+            color = c.textPrimary,
+            modifier = Modifier.weight(1f),
+        )
+        if (action != null) {
+            Text(
+                text = action,
+                style = OsText.caption,
+                color = c.primary,
+                modifier = if (onAction != null) {
+                    Modifier.clip(RoundedCornerShape(6.dp)).pressable(onAction)
+                } else {
+                    Modifier
+                },
+            )
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+}
+
+/** 下钻详情行：左标题、中摘要、右箭头 */
+@Composable
+private fun DetailRow(
     label: String,
     summary: String,
     onClick: () -> Unit,
@@ -335,10 +402,59 @@ private fun TuningRow(
             overflow = TextOverflow.Ellipsis,
         )
         Spacer(Modifier.width(6.dp))
+        Text(text = "›", style = OsText.caption, color = c.textTertiary)
+    }
+}
+
+/** 进程摘要行：图标 + 名称 + CPU 占用 */
+@Composable
+internal fun ProcessSummaryRow(
+    name: String,
+    percent: Float,
+    icon: ImageBitmap?,
+) {
+    val c = osColors()
+    Row(
+        modifier = Modifier.fillMaxWidth().height(26.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(18.dp).clip(RoundedCornerShape(5.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (icon != null) {
+                Image(
+                    bitmap = icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp).clip(RoundedCornerShape(5.dp)),
+                )
+            } else {
+                Box(Modifier.fillMaxSize().background(c.cardAlt), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = name.take(1).uppercase(),
+                        style = OsText.micro,
+                        color = c.textSecondary,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.width(9.dp))
         Text(
-            text = "›",
+            text = name,
+            style = OsText.value,
+            color = c.textPrimary,
+            fontWeight = FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = "%.1f%%".format(percent),
             style = OsText.caption,
-            color = c.textTertiary,
+            color = c.textSecondary,
+            maxLines = 1,
         )
     }
 }
